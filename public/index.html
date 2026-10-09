@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <title>Image Studio</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <div class="brand-mark" aria-hidden="true">✦</div>
+            <div>
+                <h1>Image Studio</h1>
+                <p>локальная генерация с референсами</p>
+            </div>
+        </div>
+        <div class="server-pill"><span></span> работает локально</div>
+    </header>
+
+    <main class="workspace">
+        <aside class="controls">
+            <section class="panel profile-panel">
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">Подключение</span>
+                        <h2>Профиль модели</h2>
+                    </div>
+                    <button id="profile-save" class="icon-button" title="Сохранить профиль" aria-label="Сохранить профиль">✓</button>
+                </div>
+
+                <div class="profile-picker">
+                    <select id="profile-select" aria-label="Профиль подключения"></select>
+                    <button id="profile-new" class="secondary-button" type="button">＋ Новый</button>
+                    <button id="profile-delete" class="icon-button danger" type="button" title="Удалить профиль" aria-label="Удалить профиль">×</button>
+                </div>
+
+                <div class="form-grid two">
+                    <label>
+                        <span>Название профиля</span>
+                        <input id="profile-name" type="text" autocomplete="off">
+                    </label>
+                    <label>
+                        <span>Тип API</span>
+                        <select id="provider">
+                            <option value="gemini">Gemini-compatible</option>
+                            <option value="openai">OpenAI-compatible</option>
+                            <option value="openrouter">OpenRouter</option>
+                        </select>
+                    </label>
+                </div>
+
+                <label>
+                    <span>Endpoint</span>
+                    <input id="endpoint" type="url" spellcheck="false" placeholder="https://api.example.com">
+                </label>
+
+                <label class="check-row compact">
+                    <input id="raw-endpoint" type="checkbox">
+                    <span>Endpoint указан полностью — не добавлять путь API</span>
+                </label>
+
+                <div class="form-grid key-model-grid">
+                    <label>
+                        <span>API-ключ</span>
+                        <div class="input-action">
+                            <input id="api-key" type="password" spellcheck="false" autocomplete="off">
+                            <button id="toggle-key" type="button" title="Показать или скрыть ключ">◉</button>
+                        </div>
+                    </label>
+                    <label>
+                        <span>Модель</span>
+                        <div class="input-action">
+                            <input id="model" type="text" list="model-options" spellcheck="false" placeholder="название модели">
+                            <button id="load-models" type="button" title="Загрузить список моделей">↻</button>
+                        </div>
+                        <datalist id="model-options"></datalist>
+                    </label>
+                </div>
+
+                <label class="check-row compact">
+                    <input id="remember-key" type="checkbox" checked>
+                    <span>Сохранять ключ в этом браузере</span>
+                </label>
+                <p class="hint">В профиль сохраняются тип API, endpoint, ключ, модель и параметры изображения. Референсы и история общие для всех профилей.</p>
+            </section>
+
+            <section class="panel references-panel">
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">Входные изображения</span>
+                        <h2>Референсы <span id="reference-count" class="count-badge">0</span></h2>
+                    </div>
+                    <label class="upload-button">
+                        <input id="reference-upload" type="file" accept="image/*" multiple hidden>
+                        ＋ Загрузить
+                    </label>
+                </div>
+                <div id="drop-zone" class="drop-zone">
+                    <strong>Перетащи картинки сюда</strong>
+                    <span>Можно выбрать несколько. Нажатые референсы отправляются модели.</span>
+                </div>
+                <div id="reference-list" class="reference-list"></div>
+            </section>
+
+            <section class="panel prompt-panel">
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">Задание</span>
+                        <h2>Промпт</h2>
+                    </div>
+                    <span id="prompt-counter" class="counter">0</span>
+                </div>
+                <label>
+                    <span>Префикс / стиль</span>
+                    <textarea id="prefix" rows="2" placeholder="masterpiece, cinematic lighting…"></textarea>
+                </label>
+                <label>
+                    <span>Что нарисовать</span>
+                    <textarea id="prompt" class="main-prompt" rows="7" placeholder="Опиши сцену, персонажей, ракурс и свет…"></textarea>
+                </label>
+                <label>
+                    <span>Негативный промпт <small>необязательно</small></span>
+                    <textarea id="negative-prompt" rows="2" placeholder="text, watermark, low quality…"></textarea>
+                </label>
+
+                <div class="form-grid params-grid">
+                    <label>
+                        <span>Соотношение</span>
+                        <select id="aspect-ratio">
+                            <option value="">Авто</option>
+                            <option>1:1</option><option>2:3</option><option>3:2</option>
+                            <option>3:4</option><option>4:3</option><option>4:5</option>
+                            <option>9:16</option><option>16:9</option><option>21:9</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Размер Gemini</span>
+                        <select id="image-size">
+                            <option value="">Авто</option>
+                            <option>1K</option><option>2K</option><option>4K</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Размер OpenAI</span>
+                        <select id="openai-size">
+                            <option value="">Авто</option>
+                            <option>1024x1024</option><option>1024x1536</option><option>1536x1024</option>
+                            <option>auto</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Качество</span>
+                        <select id="quality">
+                            <option value="">Авто</option>
+                            <option>standard</option><option>hd</option><option>low</option>
+                            <option>medium</option><option>high</option><option>auto</option>
+                        </select>
+                    </label>
+                </div>
+            </section>
+        </aside>
+
+        <section class="stage-column">
+            <section class="stage panel">
+                <div class="section-heading stage-heading">
+                    <div>
+                        <span class="eyebrow">Результат</span>
+                        <h2 id="result-title">Холст</h2>
+                    </div>
+                    <div id="result-actions" class="result-actions hidden">
+                        <button id="download-result" class="secondary-button" type="button">↓ Скачать</button>
+                        <button id="result-to-reference" class="secondary-button" type="button">＋ В референсы</button>
+                    </div>
+                </div>
+                <div id="canvas" class="canvas empty">
+                    <div class="empty-state">
+                        <div class="empty-orbit"><span>✦</span></div>
+                        <h3>Здесь появится изображение</h3>
+                        <p>Выбери профиль, добавь референсы и напиши промпт.</p>
+                    </div>
+                    <div id="loading-state" class="loading-state hidden">
+                        <div class="loader"></div>
+                        <h3>Генерирую…</h3>
+                        <p id="loading-caption">Запрос отправлен модели</p>
+                        <button id="cancel-generation" class="secondary-button danger-text" type="button">Остановить</button>
+                    </div>
+                    <img id="result-image" class="hidden" alt="Сгенерированное изображение">
+                </div>
+                <div id="message" class="message hidden" role="status"></div>
+                <button id="generate" class="generate-button" type="button">
+                    <span>✦</span> Сгенерировать
+                    <kbd>Ctrl ↵</kbd>
+                </button>
+            </section>
+
+            <section class="panel history-panel">
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">Локально</span>
+                        <h2>История</h2>
+                    </div>
+                    <button id="clear-history" class="text-button" type="button">Очистить</button>
+                </div>
+                <div id="history-list" class="history-list"></div>
+            </section>
+        </section>
+    </main>
+
+    <template id="reference-template">
+        <article class="reference-card">
+            <button class="reference-toggle" type="button" aria-label="Включить референс">
+                <img alt="">
+                <span class="selected-mark">✓</span>
+            </button>
+            <div class="reference-fields">
+                <input class="reference-label" type="text" placeholder="Кто или что это">
+                <textarea class="reference-description" rows="2" placeholder="Что сохранить: лицо, одежду, стиль…"></textarea>
+            </div>
+            <button class="reference-delete icon-button danger" type="button" title="Удалить">×</button>
+        </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+</body>
+</html>

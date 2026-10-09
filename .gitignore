@@ -1,0 +1,19 @@
+# Runtime logs
+*.log
+
+# Local browser/test artifacts
+.chrome-*/
+.edge-*/
+preview-*.png
+
+# Common local files
+.env
+.env.*
+!.env.example
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.idea/
+.vscode/
