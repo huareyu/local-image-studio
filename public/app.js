@@ -5,6 +5,8 @@ const STORAGE_KEYS = {
     activeProfile: 'image-studio.active-profile.v1',
     secrets: 'image-studio.session-secrets.v1',
     draft: 'image-studio.draft.v1',
+    referenceProfiles: 'image-studio.reference-profiles.v1',
+    activeReferenceProfile: 'image-studio.active-reference-profile.v1',
 };
 
 const PROVIDER_DEFAULTS = {
@@ -19,6 +21,12 @@ const els = {
     provider: $('#provider'),
     endpoint: $('#endpoint'),
     rawEndpoint: $('#raw-endpoint'),
+    proxyEnabled: $('#proxy-enabled'),
+    proxyFields: $('#proxy-fields'),
+    proxyUrl: $('#proxy-url'),
+    proxyUsername: $('#proxy-username'),
+    proxyPassword: $('#proxy-password'),
+    toggleProxyPassword: $('#toggle-proxy-password'),
     apiKey: $('#api-key'),
     rememberKey: $('#remember-key'),
     model: $('#model'),
@@ -33,6 +41,10 @@ const els = {
     referenceList: $('#reference-list'),
     referenceCount: $('#reference-count'),
     referenceTemplate: $('#reference-template'),
+    referenceProfileSelect: $('#reference-profile-select'),
+    referenceProfileNew: $('#reference-profile-new'),
+    referenceProfileRename: $('#reference-profile-rename'),
+    referenceProfileDelete: $('#reference-profile-delete'),
     prefix: $('#prefix'),
     prompt: $('#prompt'),
     negativePrompt: $('#negative-prompt'),
@@ -62,6 +74,10 @@ const defaultProfile = () => ({
     provider: 'gemini',
     endpoint: PROVIDER_DEFAULTS.gemini,
     rawEndpoint: false,
+    proxyEnabled: false,
+    proxyUrl: '',
+    proxyUsername: '',
+    proxyPassword: '',
     apiKey: '',
     rememberKey: true,
     model: '',
@@ -74,6 +90,8 @@ const defaultProfile = () => ({
 let profiles = [];
 let activeProfileId = '';
 let references = [];
+let referenceProfiles = [];
+let activeReferenceProfileId = '';
 let currentResult = null;
 let generationController = null;
 let saveDraftTimer = null;
@@ -91,11 +109,17 @@ function loadProfiles() {
     const stored = readJson(localStorage, STORAGE_KEYS.profiles, []);
     const sessionSecrets = readJson(sessionStorage, STORAGE_KEYS.secrets, {});
     profiles = Array.isArray(stored) && stored.length ? stored : [defaultProfile()];
-    profiles = profiles.map(profile => ({
-        ...defaultProfile(),
-        ...profile,
-        apiKey: profile.rememberKey === false ? (sessionSecrets[profile.id] || '') : (profile.apiKey || ''),
-    }));
+    profiles = profiles.map(profile => {
+        const sessionSecret = sessionSecrets[profile.id];
+        const legacyApiKey = typeof sessionSecret === 'string' ? sessionSecret : '';
+        const secret = sessionSecret && typeof sessionSecret === 'object' ? sessionSecret : {};
+        return {
+            ...defaultProfile(),
+            ...profile,
+            apiKey: profile.rememberKey === false ? (secret.apiKey || legacyApiKey) : (profile.apiKey || ''),
+            proxyPassword: profile.rememberKey === false ? (secret.proxyPassword || '') : (profile.proxyPassword || ''),
+        };
+    });
     activeProfileId = localStorage.getItem(STORAGE_KEYS.activeProfile) || profiles[0].id;
     if (!profiles.some(profile => profile.id === activeProfileId)) activeProfileId = profiles[0].id;
 }
@@ -104,8 +128,11 @@ function persistProfiles() {
     const secrets = {};
     const safeProfiles = profiles.map(profile => {
         if (profile.rememberKey === false) {
-            secrets[profile.id] = profile.apiKey || '';
-            return { ...profile, apiKey: '' };
+            secrets[profile.id] = {
+                apiKey: profile.apiKey || '',
+                proxyPassword: profile.proxyPassword || '',
+            };
+            return { ...profile, apiKey: '', proxyPassword: '' };
         }
         return profile;
     });
@@ -136,6 +163,10 @@ function putProfileIntoForm(profile) {
     els.provider.value = profile.provider || 'gemini';
     els.endpoint.value = profile.endpoint || PROVIDER_DEFAULTS[profile.provider] || '';
     els.rawEndpoint.checked = Boolean(profile.rawEndpoint);
+    els.proxyEnabled.checked = Boolean(profile.proxyEnabled);
+    els.proxyUrl.value = profile.proxyUrl || '';
+    els.proxyUsername.value = profile.proxyUsername || '';
+    els.proxyPassword.value = profile.proxyPassword || '';
     els.apiKey.value = profile.apiKey || '';
     els.rememberKey.checked = profile.rememberKey !== false;
     els.model.value = profile.model || '';
@@ -144,6 +175,7 @@ function putProfileIntoForm(profile) {
     els.openaiSize.value = profile.size || '';
     els.quality.value = profile.quality || '';
     syncProviderFields();
+    syncProxyFields();
 }
 
 function readProfileFromForm(profile = currentProfile()) {
@@ -153,6 +185,10 @@ function readProfileFromForm(profile = currentProfile()) {
         provider: els.provider.value,
         endpoint: els.endpoint.value.trim(),
         rawEndpoint: els.rawEndpoint.checked,
+        proxyEnabled: els.proxyEnabled.checked,
+        proxyUrl: els.proxyUrl.value.trim(),
+        proxyUsername: els.proxyUsername.value.trim(),
+        proxyPassword: els.proxyPassword.value,
         apiKey: els.apiKey.value.trim(),
         rememberKey: els.rememberKey.checked,
         model: els.model.value.trim(),
@@ -177,6 +213,10 @@ function syncProviderFields() {
     els.imageSize.closest('label')?.classList.toggle('hidden', provider !== 'gemini' && provider !== 'openrouter');
     els.aspectRatio.closest('label')?.classList.toggle('hidden', provider === 'openai');
     els.openaiSize.closest('label')?.classList.toggle('hidden', provider !== 'openai');
+}
+
+function syncProxyFields() {
+    els.proxyFields.classList.toggle('hidden', !els.proxyEnabled.checked);
 }
 
 function showMessage(text, type = 'error') {
@@ -226,6 +266,69 @@ const dbPut = (store, value) => dbRequest(store, 'readwrite', objectStore => obj
 const dbDelete = (store, key) => dbRequest(store, 'readwrite', objectStore => objectStore.delete(key));
 const dbClear = store => dbRequest(store, 'readwrite', objectStore => objectStore.clear());
 
+function currentReferenceProfile() {
+    return referenceProfiles.find(profile => profile.id === activeReferenceProfileId) || referenceProfiles[0];
+}
+
+function persistReferenceProfiles() {
+    localStorage.setItem(STORAGE_KEYS.referenceProfiles, JSON.stringify(referenceProfiles));
+    localStorage.setItem(STORAGE_KEYS.activeReferenceProfile, activeReferenceProfileId);
+}
+
+function loadReferenceProfiles() {
+    const stored = readJson(localStorage, STORAGE_KEYS.referenceProfiles, []);
+    const validIds = new Set(references.map(reference => reference.id));
+    referenceProfiles = Array.isArray(stored) ? stored.map(profile => ({
+        id: profile.id || crypto.randomUUID(),
+        name: String(profile.name || 'Без названия'),
+        referenceIds: [...new Set(Array.isArray(profile.referenceIds) ? profile.referenceIds : [])]
+            .filter(id => validIds.has(id)),
+    })) : [];
+    if (!referenceProfiles.length) {
+        referenceProfiles = [{
+            id: crypto.randomUUID(),
+            name: 'Основные референсы',
+            referenceIds: references.filter(reference => reference.enabled !== false).map(reference => reference.id),
+        }];
+    }
+    activeReferenceProfileId = localStorage.getItem(STORAGE_KEYS.activeReferenceProfile) || referenceProfiles[0].id;
+    if (!referenceProfiles.some(profile => profile.id === activeReferenceProfileId)) {
+        activeReferenceProfileId = referenceProfiles[0].id;
+    }
+    persistReferenceProfiles();
+}
+
+function isReferenceEnabled(referenceId) {
+    return currentReferenceProfile()?.referenceIds.includes(referenceId) || false;
+}
+
+function setReferenceEnabled(referenceId, enabled) {
+    const profile = currentReferenceProfile();
+    if (!profile) return;
+    const ids = new Set(profile.referenceIds);
+    if (enabled) ids.add(referenceId);
+    else ids.delete(referenceId);
+    profile.referenceIds = [...ids];
+    persistReferenceProfiles();
+    renderReferenceProfileOptions();
+}
+
+function addReferenceToActiveProfile(referenceId) {
+    setReferenceEnabled(referenceId, true);
+}
+
+function renderReferenceProfileOptions() {
+    els.referenceProfileSelect.innerHTML = '';
+    const validIds = new Set(references.map(reference => reference.id));
+    for (const profile of referenceProfiles) {
+        const count = profile.referenceIds.filter(id => validIds.has(id)).length;
+        const option = new Option(`${profile.name} · ${count}`, profile.id);
+        option.selected = profile.id === activeReferenceProfileId;
+        els.referenceProfileSelect.add(option);
+    }
+    els.referenceProfileDelete.disabled = referenceProfiles.length <= 1;
+}
+
 async function fileToDataUrl(file) {
     if (!file.type.startsWith('image/')) throw new Error(`${file.name}: это не изображение`);
     const bitmap = await createImageBitmap(file);
@@ -260,6 +363,7 @@ async function addReferenceFiles(fileList) {
             };
             await dbPut('references', entry);
             references.unshift(entry);
+            addReferenceToActiveProfile(entry.id);
         }
         renderReferences();
     } catch (error) {
@@ -271,7 +375,7 @@ async function addReferenceFiles(fileList) {
 }
 
 function updateReferenceCount() {
-    const active = references.filter(reference => reference.enabled).length;
+    const active = references.filter(reference => isReferenceEnabled(reference.id)).length;
     els.referenceCount.textContent = active === references.length ? String(active) : `${active}/${references.length}`;
 }
 
@@ -280,7 +384,7 @@ function renderReferences() {
     for (const reference of references) {
         const card = els.referenceTemplate.content.firstElementChild.cloneNode(true);
         card.dataset.id = reference.id;
-        card.classList.toggle('enabled', reference.enabled !== false);
+        card.classList.toggle('enabled', isReferenceEnabled(reference.id));
         const image = card.querySelector('img');
         image.src = reference.dataUrl;
         image.alt = reference.label || reference.name;
@@ -289,10 +393,10 @@ function renderReferences() {
         labelInput.value = reference.label || '';
         descriptionInput.value = reference.description || '';
 
-        card.querySelector('.reference-toggle').addEventListener('click', async () => {
-            reference.enabled = !reference.enabled;
-            card.classList.toggle('enabled', reference.enabled);
-            await dbPut('references', reference);
+        card.querySelector('.reference-toggle').addEventListener('click', () => {
+            const enabled = !isReferenceEnabled(reference.id);
+            setReferenceEnabled(reference.id, enabled);
+            card.classList.toggle('enabled', enabled);
             updateReferenceCount();
         });
         const saveFields = async () => {
@@ -305,6 +409,11 @@ function renderReferences() {
         card.querySelector('.reference-delete').addEventListener('click', async () => {
             await dbDelete('references', reference.id);
             references = references.filter(item => item.id !== reference.id);
+            for (const profile of referenceProfiles) {
+                profile.referenceIds = profile.referenceIds.filter(id => id !== reference.id);
+            }
+            persistReferenceProfiles();
+            renderReferenceProfileOptions();
             renderReferences();
         });
         els.referenceList.append(card);
@@ -314,6 +423,8 @@ function renderReferences() {
 
 async function loadReferences() {
     references = (await dbGetAll('references')).sort((a, b) => b.createdAt - a.createdAt);
+    loadReferenceProfiles();
+    renderReferenceProfileOptions();
     renderReferences();
 }
 
@@ -380,7 +491,7 @@ async function generate() {
     }
     generationController = new AbortController();
     setGenerating(true);
-    const activeRefs = references.filter(reference => reference.enabled !== false).map(reference => ({
+    const activeRefs = references.filter(reference => isReferenceEnabled(reference.id)).map(reference => ({
         dataUrl: reference.dataUrl,
         label: reference.label,
         description: reference.description,
@@ -520,7 +631,53 @@ function bindEvents() {
     els.toggleKey.addEventListener('click', () => {
         els.apiKey.type = els.apiKey.type === 'password' ? 'text' : 'password';
     });
+    els.proxyEnabled.addEventListener('change', syncProxyFields);
+    els.toggleProxyPassword.addEventListener('click', () => {
+        els.proxyPassword.type = els.proxyPassword.type === 'password' ? 'text' : 'password';
+    });
     els.loadModels.addEventListener('click', loadModelList);
+
+    els.referenceProfileSelect.addEventListener('change', () => {
+        activeReferenceProfileId = els.referenceProfileSelect.value;
+        persistReferenceProfiles();
+        renderReferences();
+    });
+    els.referenceProfileNew.addEventListener('click', () => {
+        const source = currentReferenceProfile();
+        const suggested = source ? `${source.name} — копия` : 'Новый набор';
+        const name = window.prompt('Название набора референсов', suggested)?.trim();
+        if (!name) return;
+        const profile = {
+            id: crypto.randomUUID(),
+            name,
+            referenceIds: [...(source?.referenceIds || [])],
+        };
+        referenceProfiles.push(profile);
+        activeReferenceProfileId = profile.id;
+        persistReferenceProfiles();
+        renderReferenceProfileOptions();
+        renderReferences();
+        showMessage('Набор референсов создан', 'success');
+    });
+    els.referenceProfileRename.addEventListener('click', () => {
+        const profile = currentReferenceProfile();
+        if (!profile) return;
+        const name = window.prompt('Новое название набора', profile.name)?.trim();
+        if (!name) return;
+        profile.name = name;
+        persistReferenceProfiles();
+        renderReferenceProfileOptions();
+    });
+    els.referenceProfileDelete.addEventListener('click', () => {
+        if (referenceProfiles.length <= 1) return showMessage('Нельзя удалить единственный набор');
+        const profile = currentReferenceProfile();
+        if (!profile || !confirm(`Удалить набор «${profile.name}»? Сами картинки останутся в галерее.`)) return;
+        referenceProfiles = referenceProfiles.filter(item => item.id !== profile.id);
+        activeReferenceProfileId = referenceProfiles[0].id;
+        persistReferenceProfiles();
+        renderReferenceProfileOptions();
+        renderReferences();
+    });
 
     els.upload.addEventListener('change', () => addReferenceFiles(els.upload.files));
     els.dropZone.addEventListener('click', () => els.upload.click());
@@ -568,6 +725,7 @@ function bindEvents() {
         };
         await dbPut('references', entry);
         references.unshift(entry);
+        addReferenceToActiveProfile(entry.id);
         renderReferences();
         showMessage('Результат добавлен в референсы', 'success');
     });

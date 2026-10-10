@@ -2,12 +2,14 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fetch, ProxyAgent } from 'undici';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const PORT = Number(process.env.PORT || 3210);
 const MAX_BODY_BYTES = 90 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+const proxyAgents = new Map();
 
 const MIME_TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -110,6 +112,8 @@ function authHeaders(profile) {
 function safeUrlForLog(value) {
     try {
         const url = new URL(value);
+        if (url.username) url.username = '***';
+        if (url.password) url.password = '***';
         for (const key of ['key', 'api_key', 'token', 'access_token']) {
             if (url.searchParams.has(key)) url.searchParams.set(key, '***');
         }
@@ -117,6 +121,33 @@ function safeUrlForLog(value) {
     } catch {
         return String(value || '');
     }
+}
+
+function proxyDispatcher(profile = {}) {
+    if (!profile.proxyEnabled) return undefined;
+    const rawUrl = String(profile.proxyUrl || '').trim();
+    if (!rawUrl) throw new HttpError(400, 'Прокси включён, но его адрес не указан');
+    let url;
+    try {
+        url = new URL(rawUrl);
+    } catch {
+        throw new HttpError(400, 'Некорректный адрес прокси', 'Используйте адрес вида http://127.0.0.1:8080');
+    }
+    if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new HttpError(400, 'Неподдерживаемый тип прокси', 'Поддерживаются HTTP- и HTTPS-прокси.');
+    }
+    const embeddedUsername = decodeURIComponent(url.username || '');
+    const embeddedPassword = decodeURIComponent(url.password || '');
+    const username = String(profile.proxyUsername || embeddedUsername).trim();
+    const password = String(profile.proxyPassword || embeddedPassword);
+    url.username = '';
+    url.password = '';
+    const token = username || password
+        ? `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`
+        : undefined;
+    const key = `${url.toString()}\n${token || ''}`;
+    if (!proxyAgents.has(key)) proxyAgents.set(key, new ProxyAgent({ uri: url.toString(), token }));
+    return proxyAgents.get(key);
 }
 
 function describeConnectionError(error, url) {
@@ -140,13 +171,17 @@ function describeConnectionError(error, url) {
     ].filter(Boolean).join('\n');
 }
 
-async function fetchWithTimeout(url, options = {}, incomingRequest = null) {
+async function fetchWithTimeout(url, options = {}, incomingRequest = null, profile = {}) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error('Request timed out')), REQUEST_TIMEOUT_MS);
     const abortFromClient = () => controller.abort(new Error('Client disconnected'));
     incomingRequest?.once('aborted', abortFromClient);
     try {
-        return await fetch(url, { ...options, signal: controller.signal });
+        return await fetch(url, {
+            ...options,
+            signal: controller.signal,
+            dispatcher: proxyDispatcher(profile),
+        });
     } catch (error) {
         if (controller.signal.aborted) {
             const reason = controller.signal.reason?.message || 'Запрос отменён';
@@ -170,8 +205,8 @@ async function parseRemoteError(response) {
     return String(message).slice(0, 1800);
 }
 
-async function remoteImageToDataUrl(url, req) {
-    const response = await fetchWithTimeout(url, {}, req);
+async function remoteImageToDataUrl(url, req, profile) {
+    const response = await fetchWithTimeout(url, {}, req, profile);
     if (!response.ok) throw new HttpError(502, 'Не удалось скачать результат', await parseRemoteError(response));
     const mime = response.headers.get('content-type')?.split(';')[0] || 'image/png';
     const bytes = Buffer.from(await response.arrayBuffer());
@@ -214,7 +249,7 @@ async function generateOpenAi(body, req) {
             method: 'POST',
             headers: authHeaders(profile),
             body: form,
-        }, req);
+        }, req, profile);
     } else {
         const url = appendPath(endpoint, '/v1/images/generations', profile.rawEndpoint);
         const payload = { model, prompt: fullPrompt, n: 1 };
@@ -225,12 +260,12 @@ async function generateOpenAi(body, req) {
             method: 'POST',
             headers: { ...authHeaders(profile), 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
-        }, req);
+        }, req, profile);
     }
 
     if (!response.ok) throw new HttpError(response.status, 'Ошибка API генерации', await parseRemoteError(response));
     const result = extractOpenAiImage(await response.json());
-    const dataUrl = result.dataUrl || await remoteImageToDataUrl(result.url, req);
+    const dataUrl = result.dataUrl || await remoteImageToDataUrl(result.url, req, profile);
     return { dataUrl, provider: 'openai', model };
 }
 
@@ -283,7 +318,7 @@ async function generateGemini(body, req) {
         method: 'POST',
         headers: geminiHeaders(profile, endpoint),
         body: JSON.stringify(payload),
-    }, req);
+    }, req, profile);
     if (!response.ok) throw new HttpError(response.status, 'Ошибка Gemini API', await parseRemoteError(response));
     return { dataUrl: extractGeminiImage(await response.json()), provider: 'gemini', model };
 }
@@ -329,11 +364,11 @@ async function generateOpenRouter(body, req) {
             'X-Title': 'Local Image Studio',
         },
         body: JSON.stringify(payload),
-    }, req);
+    }, req, profile);
     if (!response.ok) throw new HttpError(response.status, 'Ошибка OpenRouter API', await parseRemoteError(response));
     const image = extractOpenRouterImage(await response.json());
     return {
-        dataUrl: image.startsWith('data:') ? image : await remoteImageToDataUrl(image, req),
+        dataUrl: image.startsWith('data:') ? image : await remoteImageToDataUrl(image, req, profile),
         provider: 'openrouter',
         model,
     };
@@ -367,7 +402,7 @@ async function handleModels(req, res) {
         url = appendPath(endpoint, '/models');
         headers = authHeaders(profile);
     }
-    const response = await fetchWithTimeout(url, { headers }, req);
+    const response = await fetchWithTimeout(url, { headers }, req, profile);
     if (!response.ok) throw new HttpError(response.status, 'Не удалось получить модели', await parseRemoteError(response));
     const result = await response.json();
     const values = provider === 'gemini'

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const APP_PORT = 3212;
 const MOCK_PORT = 3213;
+const PROXY_PORT = 3214;
 const root = new URL('../', import.meta.url);
 const children = [];
 
@@ -41,10 +42,12 @@ async function post(path, body) {
 
 try {
     launch('tests/mock-provider.mjs', { MOCK_PORT: String(MOCK_PORT) });
+    launch('tests/mock-proxy.mjs', { PROXY_PORT: String(PROXY_PORT) });
     launch('server.mjs', { PORT: String(APP_PORT) });
     await Promise.all([
         waitFor(`http://127.0.0.1:${APP_PORT}`),
         waitFor(`http://127.0.0.1:${MOCK_PORT}/models`),
+        waitFor(`http://127.0.0.1:${PROXY_PORT}/__stats`),
     ]);
 
     const base = {
@@ -91,7 +94,22 @@ try {
     });
     if (!models.models.includes('mock-image-model')) throw new Error('Model discovery failed');
 
-    console.log('Smoke tests passed: static, OpenAI generate/edit, Gemini, OpenRouter, model discovery');
+    const proxiedModels = await post('/api/models', {
+        profile: {
+            provider: 'openai',
+            endpoint,
+            apiKey: 'test',
+            proxyEnabled: true,
+            proxyUrl: `http://127.0.0.1:${PROXY_PORT}`,
+            proxyUsername: 'proxy-user',
+            proxyPassword: 'proxy-pass',
+        },
+    });
+    if (!proxiedModels.models.includes('mock-image-model')) throw new Error('Proxied model discovery failed');
+    const proxyStats = await fetch(`http://127.0.0.1:${PROXY_PORT}/__stats`).then(response => response.json());
+    if (proxyStats.forwarded < 1) throw new Error('Proxy was not used');
+
+    console.log('Smoke tests passed: static, providers, references, model discovery, authenticated HTTP proxy');
 } finally {
     for (const child of children) child.kill();
 }

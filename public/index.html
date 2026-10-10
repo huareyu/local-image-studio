@@ -61,6 +61,33 @@
                     <span>Endpoint указан полностью — не добавлять путь API</span>
                 </label>
 
+                <div class="proxy-box">
+                    <label class="check-row">
+                        <input id="proxy-enabled" type="checkbox">
+                        <span>Использовать HTTP/HTTPS-прокси для этого профиля</span>
+                    </label>
+                    <div id="proxy-fields" class="proxy-fields hidden">
+                        <label>
+                            <span>Адрес прокси</span>
+                            <input id="proxy-url" type="url" spellcheck="false" placeholder="http://127.0.0.1:8080">
+                        </label>
+                        <div class="form-grid two">
+                            <label>
+                                <span>Логин <small>необязательно</small></span>
+                                <input id="proxy-username" type="text" spellcheck="false" autocomplete="off">
+                            </label>
+                            <label>
+                                <span>Пароль <small>необязательно</small></span>
+                                <div class="input-action">
+                                    <input id="proxy-password" type="password" spellcheck="false" autocomplete="off">
+                                    <button id="toggle-proxy-password" type="button" title="Показать или скрыть пароль">◉</button>
+                                </div>
+                            </label>
+                        </div>
+                        <p class="hint">Запросы моделей, генерации и скачивание результата пойдут через этот прокси. Кнопка ↻ у модели проверяет соединение.</p>
+                    </div>
+                </div>
+
                 <div class="form-grid key-model-grid">
                     <label>
                         <span>API-ключ</span>
@@ -81,9 +108,9 @@
 
                 <label class="check-row compact">
                     <input id="remember-key" type="checkbox" checked>
-                    <span>Сохранять ключ в этом браузере</span>
+                    <span>Сохранять API-ключ и пароль прокси в этом браузере</span>
                 </label>
-                <p class="hint">В профиль сохраняются тип API, endpoint, ключ, модель и параметры изображения. Референсы и история общие для всех профилей.</p>
+                <p class="hint">В профиль сохраняются тип API, endpoint, прокси, ключ, модель и параметры изображения. Галерея референсов и история общие для всех профилей.</p>
             </section>
 
             <section class="panel references-panel">
@@ -97,6 +124,13 @@
                         ＋ Загрузить
                     </label>
                 </div>
+                <div class="reference-profile-picker">
+                    <select id="reference-profile-select" aria-label="Профиль референсов"></select>
+                    <button id="reference-profile-new" class="secondary-button" type="button">＋ Набор</button>
+                    <button id="reference-profile-rename" class="icon-button" type="button" title="Переименовать набор" aria-label="Переименовать набор">✎</button>
+                    <button id="reference-profile-delete" class="icon-button danger" type="button" title="Удалить набор" aria-label="Удалить набор">×</button>
+                </div>
+                <p class="reference-profile-hint">Профиль запоминает, какие картинки отмечены. Сами изображения и их описания остаются общими.</p>
                 <div id="drop-zone" class="drop-zone">
                     <strong>Перетащи картинки сюда</strong>
                     <span>Можно выбрать несколько. Нажатые референсы отправляются модели.</span>
