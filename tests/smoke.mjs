@@ -2,12 +2,16 @@ import { spawn } from 'node:child_process';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
 
 const APP_PORT = 3212;
 const MOCK_PORT = 3213;
 const PROXY_PORT = 3214;
 const root = new URL('../', import.meta.url);
 const children = [];
+const imagesDir = await fs.mkdtemp(path.join(os.tmpdir(), 'image-studio-smoke-'));
 
 function launch(file, env = {}) {
     const child = spawn(process.execPath, [fileURLToPath(new URL(file, root))], {
@@ -44,7 +48,7 @@ async function post(path, body) {
 try {
     launch('tests/mock-provider.mjs', { MOCK_PORT: String(MOCK_PORT) });
     launch('tests/mock-proxy.mjs', { PROXY_PORT: String(PROXY_PORT) });
-    launch('server.mjs', { PORT: String(APP_PORT) });
+    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir });
     await Promise.all([
         waitFor(`http://127.0.0.1:${APP_PORT}`),
         waitFor(`http://127.0.0.1:${MOCK_PORT}/models`),
@@ -68,6 +72,40 @@ try {
         profile: { provider: 'openai', endpoint, apiKey: 'test', model: 'mock-image-model' },
     });
     if (!openai.dataUrl?.startsWith('data:image/png;base64,')) throw new Error('OpenAI result invalid');
+    assert.ok(openai.id && openai.createdAt && openai.archive?.fileName, 'Generated image was not archived');
+    assert.equal(openai.archive.folderPath, imagesDir);
+    assert.deepEqual(await fs.readFile(path.join(imagesDir, openai.archive.fileName)), Buffer.from(openai.dataUrl.split(',')[1], 'base64'));
+    const legacy = { id: 'legacy-image', createdAt: 1720000000000, dataUrl: openai.dataUrl, folderPath: 'C:\\not-allowed' };
+    const imported = await post('/api/images/archive', legacy);
+    assert.equal(imported.folderPath, imagesDir, 'Client could select an arbitrary folder');
+    assert.deepEqual(await post('/api/images/archive', legacy), imported, 'Import duplicated an existing file');
+    for (const route of ['/api/images/archive', '/api/images/open-folder', '/api/generate']) {
+        const foreign = await fetch(`http://127.0.0.1:${APP_PORT}${route}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://untrusted.example' }, body: JSON.stringify(legacy),
+        });
+        assert.equal(foreign.status, 403, 'A foreign site could write files or open a native folder');
+    }
+    const plainText = await fetch(`http://127.0.0.1:${APP_PORT}/api/images/archive`, {
+        method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(legacy),
+    });
+    assert.equal(plainText.status, 415);
+    const traversal = await fetch(`http://127.0.0.1:${APP_PORT}/api/images/archive`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...legacy, id: '../outside' }),
+    });
+    assert.equal(traversal.status, 400);
+
+    const blockedDir = path.join(imagesDir, 'not-a-directory');
+    await fs.writeFile(blockedDir, 'test fixture');
+    launch('server.mjs', { PORT: '3215', IMAGE_STUDIO_IMAGES_DIR: blockedDir });
+    await waitFor('http://127.0.0.1:3215');
+    const diskFailureResponse = await fetch('http://127.0.0.1:3215/api/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...base, profile: { provider: 'openai', endpoint: `http://127.0.0.1:${MOCK_PORT}`, apiKey: 'test', model: 'mock-image-model' } }),
+    });
+    assert.equal(diskFailureResponse.status, 200, 'Disk failure discarded a paid generation');
+    const diskFailure = await diskFailureResponse.json();
+    assert.equal(diskFailure.dataUrl, openai.dataUrl);
+    assert.ok(diskFailure.archiveError && !diskFailure.archive);
 
     const openaiEdit = await post('/api/generate', {
         ...base,
@@ -124,6 +162,11 @@ try {
     };
     const naiRefs = [{ dataUrl: openai.dataUrl, label: 'face', description: 'REFERENCE_ONLY_MARKER' }];
     const nai = await post('/api/generate', { ...base, profile: novelaiProfile, references: naiRefs });
+    for (const generated of [openaiEdit, gemini, openrouter, nai]) {
+        assert.ok(generated.archive?.fileName, `No automatic file save for ${generated.provider}`);
+        assert.ok(!generated.archiveError, `Archive failed for ${generated.provider}`);
+        assert.deepEqual(await fs.readFile(path.join(imagesDir, generated.archive.fileName)), Buffer.from(generated.dataUrl.split(',')[1], 'base64'));
+    }
     assert.equal(nai.dataUrl, openai.dataUrl);
     assert.equal(nai.seed, 12345);
     assert.equal(nai.width, 1216);
@@ -176,7 +219,11 @@ try {
     const naiModels = await post('/api/models', { profile: novelaiProfile });
     assert.ok(naiModels.catalog && naiModels.models.includes('nai-diffusion-5-full'));
 
-    console.log('Smoke tests passed: all providers, NovelAI personal token/JSON/proxy, V3/V4.5/V5/Medium parameters, reference isolation, key check');
+    console.log('Smoke tests passed: automatic image archiving, idempotent legacy imports, local-only folder API, all providers, NovelAI personal token/JSON/proxy, V3/V4.5/V5/Medium parameters, reference isolation, key check');
 } finally {
     for (const child of children) child.kill();
+    await Promise.all(children.filter(child => child.exitCode === null).map(child => new Promise(resolve => child.once('exit', resolve))));
+    assert.equal(path.dirname(path.resolve(imagesDir)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(imagesDir).startsWith('image-studio-smoke-'));
+    await fs.rm(imagesDir, { recursive: true, force: true });
 }

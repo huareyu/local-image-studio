@@ -1,6 +1,9 @@
 # Runtime logs
 *.log
 
+# Private generated images (never publish them to GitHub)
+/generated-images/
+
 # Local browser/test artifacts
 .chrome-*/
 .edge-*/

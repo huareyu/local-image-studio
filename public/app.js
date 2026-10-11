@@ -81,6 +81,18 @@ const els = {
     message: $('#message'),
     historyList: $('#history-list'),
     clearHistory: $('#clear-history'),
+    openImageFolder: $('#open-image-folder'),
+    historyFolderHint: $('#history-folder-hint'),
+    historySelect: $('#history-select'),
+    historySelection: $('#history-selection'),
+    historySelectedCount: $('#history-selected-count'),
+    historySelectPage: $('#history-select-page'),
+    historyDeselect: $('#history-deselect'),
+    historyDeleteSelected: $('#history-delete-selected'),
+    historyPagination: $('#history-pagination'),
+    historyPrevious: $('#history-previous'),
+    historyNext: $('#history-next'),
+    historyPageLabel: $('#history-page-label'),
     novelaiPanel: $('#novelai-panel'),
     novelaiKeyHint: $('#novelai-key-hint'),
     novelaiModelHint: $('#novelai-model-hint'),
@@ -162,6 +174,12 @@ let saveDraftTimer = null;
 let novelaiValues = { ...NOVELAI_DEFAULTS };
 let novelaiTagPresets = [];
 let novelaiNegativePresets = [];
+const HISTORY_PAGE_SIZE = 12;
+let historyEntries = [];
+let historyPage = 0;
+let historySelectionMode = false;
+let historyBusy = false;
+const selectedHistoryIds = new Set();
 
 function readJson(storage, key, fallback) {
     try {
@@ -487,17 +505,47 @@ async function dbRequest(storeName, mode, operation) {
         const tx = db.transaction(storeName, mode);
         const store = tx.objectStore(storeName);
         let request;
-        try { request = operation(store); } catch (error) { reject(error); return; }
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-        tx.oncomplete = () => db.close();
+        let result;
+        tx.oncomplete = () => { db.close(); resolve(result); };
+        tx.onabort = () => { db.close(); reject(tx.error || new Error('Операция с базой отменена')); };
+        try { request = operation(store); } catch (error) { tx.abort(); reject(error); return; }
+        request.onsuccess = () => { result = request.result; };
     });
 }
 
 const dbGetAll = store => dbRequest(store, 'readonly', objectStore => objectStore.getAll());
+const dbGet = (store, key) => dbRequest(store, 'readonly', objectStore => objectStore.get(key));
 const dbPut = (store, value) => dbRequest(store, 'readwrite', objectStore => objectStore.put(value));
 const dbDelete = (store, key) => dbRequest(store, 'readwrite', objectStore => objectStore.delete(key));
-const dbClear = store => dbRequest(store, 'readwrite', objectStore => objectStore.clear());
+
+async function historyTransaction(operation) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction('history', 'readwrite');
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onabort = () => { db.close(); reject(tx.error || new Error('Не удалось изменить историю')); };
+        try { operation(tx.objectStore('history')); } catch (error) { tx.abort(); reject(error); }
+    });
+}
+
+async function historyMetadata() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+        const entries = [];
+        const tx = db.transaction('history', 'readonly');
+        tx.oncomplete = () => { db.close(); resolve(entries); };
+        tx.onabort = () => { db.close(); reject(tx.error || new Error('Не удалось прочитать историю')); };
+        const request = tx.objectStore('history').openCursor();
+        request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) return;
+            // Keep only metadata in memory; full images are loaded for the visible page.
+            const { dataUrl, ...metadata } = cursor.value;
+            entries.push(metadata);
+            cursor.continue();
+        };
+    });
+}
 
 function currentReferenceProfile() {
     return referenceProfiles.find(profile => profile.id === activeReferenceProfileId) || referenceProfiles[0];
@@ -769,7 +817,7 @@ async function generate() {
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error([result.error, result.details].filter(Boolean).join('\n'));
         const entry = {
-            id: crypto.randomUUID(),
+            id: result.id || crypto.randomUUID(),
             dataUrl: result.dataUrl,
             provider: result.provider || profile.provider,
             model: result.model || profile.model,
@@ -777,7 +825,8 @@ async function generate() {
             prompt,
             prefix,
             negativePrompt: result.negativePrompt ?? negativePrompt,
-            createdAt: Date.now(),
+            createdAt: result.createdAt || Date.now(),
+            archive: result.archive,
             referenceCount: result.referenceCount ?? activeRefs.length,
             seed: result.seed,
             width: result.width,
@@ -786,7 +835,8 @@ async function generate() {
         await dbPut('history', entry);
         displayResult(entry);
         await renderHistory();
-        showMessage('Изображение готово', 'success');
+        if (result.archiveError) showMessage(`Изображение готово. ${result.archiveError}. Оно осталось в истории браузера.`);
+        else showMessage(result.archive?.fileName ? 'Изображение готово и сохранено в папку' : 'Изображение готово', 'success');
     } catch (error) {
         if (error.name === 'AbortError') showMessage('Генерация остановлена');
         else showMessage(error.message || String(error));
@@ -797,31 +847,178 @@ async function generate() {
 }
 
 async function renderHistory() {
-    const history = (await dbGetAll('history')).sort((a, b) => b.createdAt - a.createdAt).slice(0, 40);
+    historyEntries = (await historyMetadata()).sort((a, b) => b.createdAt - a.createdAt);
+    if (!historyEntries.length) historySelectionMode = false;
+    const validIds = new Set(historyEntries.map(entry => entry.id));
+    for (const id of selectedHistoryIds) if (!validIds.has(id)) selectedHistoryIds.delete(id);
+    historyPage = Math.min(historyPage, Math.max(0, Math.ceil(historyEntries.length / HISTORY_PAGE_SIZE) - 1));
+    paintHistoryPage();
+}
+
+function syncHistoryControls() {
+    const pages = Math.ceil(historyEntries.length / HISTORY_PAGE_SIZE);
+    els.historySelect.textContent = historySelectionMode ? 'Отмена выбора' : 'Выбрать';
+    els.historySelect.disabled = historyBusy || !historyEntries.length;
+    els.historySelection.classList.toggle('hidden', !historySelectionMode);
+    els.historySelectedCount.textContent = `Выбрано: ${selectedHistoryIds.size}`;
+    els.historyDeleteSelected.textContent = `Удалить выбранные (${selectedHistoryIds.size})`;
+    els.historyDeleteSelected.disabled = historyBusy || !selectedHistoryIds.size;
+    els.historyDeselect.disabled = historyBusy || !selectedHistoryIds.size;
+    els.historySelectPage.disabled = historyBusy || !historyEntries.length;
+    els.clearHistory.disabled = historyBusy || !historyEntries.length;
+    els.openImageFolder.disabled = historyBusy;
+    els.historyPagination.classList.toggle('hidden', pages <= 1);
+    els.historyPageLabel.textContent = `${historyPage + 1} / ${pages || 1} · ${historyEntries.length} изображений`;
+    els.historyPrevious.disabled = historyBusy || historyPage === 0;
+    els.historyNext.disabled = historyBusy || historyPage + 1 >= pages;
+    for (const card of els.historyList.children) {
+        const selected = selectedHistoryIds.has(card.dataset.id);
+        card.classList.toggle('selected', selected);
+        const checkbox = card.querySelector('input');
+        checkbox.checked = selected;
+        checkbox.disabled = historyBusy;
+        card.querySelector('.history-checkbox').classList.toggle('hidden', !historySelectionMode);
+        card.querySelector('.history-delete').classList.toggle('hidden', historySelectionMode);
+        card.querySelector('.history-delete').disabled = historyBusy;
+    }
+}
+
+function toggleHistorySelection(id) {
+    if (historyBusy) return;
+    if (selectedHistoryIds.has(id)) selectedHistoryIds.delete(id);
+    else selectedHistoryIds.add(id);
+    syncHistoryControls();
+}
+
+async function activateHistoryEntry(id) {
+    try {
+        const entry = await dbGet('history', id);
+        if (!entry) return await renderHistory();
+        displayResult(entry);
+        els.prompt.value = entry.prompt || '';
+        els.prefix.value = entry.prefix || '';
+        if (els.provider.value === 'novelai') {
+            NOVELAI_FIELDS.novelaiNegativePrompt.value = entry.negativePrompt || '';
+            novelaiValues.novelaiNegativePrompt = entry.negativePrompt || '';
+        } else els.negativePrompt.value = entry.negativePrompt || '';
+        saveDraftSoon();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (error) { showMessage(error.message || String(error)); }
+}
+
+function paintHistoryPage() {
     els.historyList.innerHTML = '';
-    for (const entry of history) {
+    for (const entry of historyEntries.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE)) {
+        const card = document.createElement('article');
+        card.className = 'history-item';
+        card.dataset.id = entry.id;
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'history-item';
+        button.className = 'history-preview';
         button.title = entry.prompt || '';
+        button.setAttribute('aria-label', `Открыть: ${entry.prompt || entry.model || 'изображение'}`);
         const image = new Image();
-        image.src = entry.dataUrl;
         image.alt = entry.prompt || '';
+        image.loading = 'lazy';
         const label = document.createElement('span');
+        label.className = 'history-caption';
         label.textContent = entry.model || entry.profileName || 'image';
         button.append(image, label);
         button.addEventListener('click', () => {
-            displayResult(entry);
-            els.prompt.value = entry.prompt || '';
-            els.prefix.value = entry.prefix || '';
-            if (els.provider.value === 'novelai') {
-                NOVELAI_FIELDS.novelaiNegativePrompt.value = entry.negativePrompt || '';
-                novelaiValues.novelaiNegativePrompt = entry.negativePrompt || '';
-            } else els.negativePrompt.value = entry.negativePrompt || '';
-            saveDraftSoon();
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+            if (historySelectionMode) toggleHistorySelection(entry.id);
+            else activateHistoryEntry(entry.id);
         });
-        els.historyList.append(button);
+        const checkboxLabel = document.createElement('label');
+        checkboxLabel.className = 'history-checkbox';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.setAttribute('aria-label', `Выбрать: ${entry.prompt || entry.model || 'изображение'}`);
+        checkbox.addEventListener('change', () => toggleHistorySelection(entry.id));
+        checkboxLabel.append(checkbox);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'history-delete';
+        remove.textContent = '×';
+        remove.title = 'Удалить из истории';
+        remove.setAttribute('aria-label', 'Удалить это изображение из истории');
+        remove.addEventListener('click', () => deleteHistoryEntries([entry.id]));
+        card.append(button, checkboxLabel, remove);
+        els.historyList.append(card);
+        dbGet('history', entry.id).then(full => {
+            if (full && image.isConnected) image.src = full.dataUrl;
+        }).catch(() => { image.alt = 'Не удалось загрузить изображение'; });
+    }
+    syncHistoryControls();
+}
+
+async function deleteHistoryEntries(ids, { all = false } = {}) {
+    if (historyBusy || !ids.length) return;
+    const question = all ? `Очистить всю историю (${ids.length} изображений)?`
+        : `Удалить из истории ${ids.length === 1 ? 'это изображение' : `выбранные изображения (${ids.length})`}?`;
+    if (!confirm(`${question}\nФайлы в папке и изображения в референсах останутся.`)) return;
+    historyBusy = true;
+    syncHistoryControls();
+    try {
+        await historyTransaction(store => { for (const id of ids) store.delete(id); });
+        for (const id of ids) selectedHistoryIds.delete(id);
+        if (currentResult && ids.includes(currentResult.id)) {
+            currentResult = null;
+            els.resultImage.removeAttribute('src');
+            els.resultTitle.textContent = 'Холст';
+            els.resultMeta.classList.add('hidden');
+            setGenerating(Boolean(generationController));
+        }
+        await renderHistory();
+        showMessage(`Удалено из истории: ${ids.length}. Файлы сохранены.`, 'success');
+    } catch (error) { showMessage(`Не удалось удалить изображения: ${error.message}`); }
+    finally { historyBusy = false; syncHistoryControls(); }
+}
+
+async function postImageAction(route, body = {}) {
+    const response = await fetch(route, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error([result.error || `Ошибка ${response.status}`, result.details].filter(Boolean).join('\n'));
+    return result;
+}
+
+async function openImageFolder() {
+    if (historyBusy) return;
+    historyBusy = true;
+    syncHistoryControls();
+    const originalLabel = els.openImageFolder.textContent;
+    els.historyFolderHint.classList.remove('hidden');
+    const failed = [];
+    try {
+        const missing = (await historyMetadata()).filter(entry => !entry.archive?.fileName);
+        for (let index = 0; index < missing.length; index++) {
+            els.openImageFolder.textContent = `Сохраняю ${index + 1}/${missing.length}…`;
+            els.historyFolderHint.textContent = 'Копирую старые изображения из браузера в папку. История и референсы останутся на месте.';
+            try {
+                const entry = await dbGet('history', missing[index].id);
+                if (!entry) continue;
+                const archive = await postImageAction('/api/images/archive', { id: entry.id, dataUrl: entry.dataUrl, createdAt: entry.createdAt });
+                await historyTransaction(store => {
+                    const request = store.get(entry.id);
+                    request.onsuccess = () => {
+                        if (request.result) store.put({ ...request.result, archive });
+                    };
+                });
+                if (currentResult?.id === entry.id) currentResult.archive = archive;
+            } catch (error) { failed.push(error.message); }
+        }
+        els.openImageFolder.textContent = 'Открываю…';
+        const result = await postImageAction('/api/images/open-folder');
+        els.historyFolderHint.textContent = `Папка: ${result.folderPath}. Открывается на компьютере, где запущен Image Studio.`;
+        if (failed.length) showMessage(`Папка открыта, но ${failed.length} старых изображений не сохранились: ${failed[0]}`);
+    } catch (error) {
+        els.historyFolderHint.textContent = `Не удалось открыть папку: ${error.message}`;
+        showMessage(error.message || String(error));
+    } finally {
+        els.openImageFolder.textContent = originalLabel;
+        historyBusy = false;
+        await renderHistory().catch(error => showMessage(error.message));
     }
 }
 
@@ -1050,7 +1247,7 @@ function bindEvents() {
     });
     els.downloadResult.addEventListener('click', () => {
         if (!currentResult) return;
-        downloadDataUrl(currentResult.dataUrl, `image-${new Date(currentResult.createdAt).toISOString().replace(/[:.]/g, '-')}.png`);
+        downloadDataUrl(currentResult.dataUrl, currentResult.archive?.fileName || `image-${new Date(currentResult.createdAt).toISOString().replace(/[:.]/g, '-')}.png`);
     });
     els.resultToReference.addEventListener('click', async () => {
         if (!currentResult) return;
@@ -1069,11 +1266,22 @@ function bindEvents() {
         renderReferences();
         showMessage('Результат добавлен в референсы', 'success');
     });
-    els.clearHistory.addEventListener('click', async () => {
-        if (!confirm('Очистить всю локальную историю изображений?')) return;
-        await dbClear('history');
-        await renderHistory();
+    els.openImageFolder.addEventListener('click', openImageFolder);
+    els.historySelect.addEventListener('click', () => {
+        if (historyBusy) return;
+        historySelectionMode = !historySelectionMode;
+        if (!historySelectionMode) selectedHistoryIds.clear();
+        syncHistoryControls();
     });
+    els.historySelectPage.addEventListener('click', () => {
+        for (const entry of historyEntries.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE)) selectedHistoryIds.add(entry.id);
+        syncHistoryControls();
+    });
+    els.historyDeselect.addEventListener('click', () => { selectedHistoryIds.clear(); syncHistoryControls(); });
+    els.historyDeleteSelected.addEventListener('click', () => deleteHistoryEntries([...selectedHistoryIds]));
+    els.clearHistory.addEventListener('click', () => deleteHistoryEntries(historyEntries.map(entry => entry.id), { all: true }));
+    els.historyPrevious.addEventListener('click', () => { historyPage--; paintHistoryPage(); });
+    els.historyNext.addEventListener('click', () => { historyPage++; paintHistoryPage(); });
 }
 
 async function init() {

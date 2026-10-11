@@ -2,12 +2,15 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { fetch, ProxyAgent } from 'undici';
 import { NOVELAI_ENDPOINT, NOVELAI_MODELS, buildNovelaiRequest } from './public/novelai.js';
 import { decodeNovelaiResult } from './lib/novelai-result.mjs';
+import { createImageArchive } from './lib/image-archive.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const imageArchive = createImageArchive(process.env.IMAGE_STUDIO_IMAGES_DIR || path.join(ROOT, 'generated-images'));
 const PORT = Number(process.env.PORT || 3210);
 const MAX_BODY_BYTES = 90 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
@@ -434,6 +437,7 @@ async function handleNovelaiStatus(req, res) {
 }
 
 async function handleGenerate(req, res) {
+    requireLocalImageAction(req);
     const body = await readJson(req);
     const provider = String(body?.profile?.provider || 'openai');
     let result;
@@ -441,7 +445,41 @@ async function handleGenerate(req, res) {
     else if (provider === 'openrouter') result = await generateOpenRouter(body, req);
     else if (provider === 'novelai') result = await generateNovelai(body, req);
     else result = await generateOpenAi(body, req);
+    result.id = randomUUID();
+    result.createdAt = Date.now();
+    try {
+        result.archive = await imageArchive.save(result);
+    } catch (error) {
+        // A disk problem must not discard an already-paid generation.
+        result.archiveError = `Не удалось сохранить файл: ${error.message}`;
+    }
     sendJson(res, 200, result);
+}
+
+function requireLocalImageAction(req) {
+    let host;
+    try { host = new URL(`http://${req.headers.host}`); } catch { throw new HttpError(403, 'Недопустимый адрес'); }
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(host.hostname)
+        || (req.headers.origin && req.headers.origin !== host.origin)
+        || req.headers['sec-fetch-site'] === 'cross-site') {
+        throw new HttpError(403, 'Действие доступно только из локального Image Studio');
+    }
+    if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) {
+        throw new HttpError(415, 'Требуется application/json');
+    }
+}
+
+async function handleArchiveImage(req, res) {
+    requireLocalImageAction(req);
+    const entry = await readJson(req);
+    try { sendJson(res, 200, await imageArchive.save(entry)); }
+    catch (error) { throw new HttpError(400, error.message); }
+}
+
+async function handleOpenImageFolder(req, res) {
+    requireLocalImageAction(req);
+    try { sendJson(res, 200, await imageArchive.open()); }
+    catch (error) { throw new HttpError(500, 'Не удалось открыть папку изображений', `${imageArchive.folderPath}\n${error.message}`); }
 }
 
 async function handleModels(req, res) {
@@ -498,6 +536,8 @@ const server = http.createServer(async (req, res) => {
         if (req.method === 'POST' && req.url === '/api/generate') return await handleGenerate(req, res);
         if (req.method === 'POST' && req.url === '/api/models') return await handleModels(req, res);
         if (req.method === 'POST' && req.url === '/api/novelai/status') return await handleNovelaiStatus(req, res);
+        if (req.method === 'POST' && req.url === '/api/images/archive') return await handleArchiveImage(req, res);
+        if (req.method === 'POST' && req.url === '/api/images/open-folder') return await handleOpenImageFolder(req, res);
         if (req.method === 'GET') return await serveStatic(req, res);
         throw new HttpError(405, 'Method not allowed');
     } catch (error) {

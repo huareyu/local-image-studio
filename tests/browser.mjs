@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import { WebSocket } from 'undici';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -13,6 +14,8 @@ const DEBUG_PORT = 9228;
 const origin = `http://127.0.0.1:${APP_PORT}`;
 const children = [];
 const errors = [];
+const imagesDir = await fs.mkdtemp(path.join(os.tmpdir(), 'image-studio-browser-'));
+let folderRequests = 0;
 let socket;
 
 function launch(file, env) {
@@ -86,7 +89,7 @@ async function layoutCheck() {
 }
 
 try {
-    launch('server.mjs', { PORT: String(APP_PORT) });
+    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir });
     launch('tests/mock-provider.mjs', { MOCK_PORT: String(MOCK_PORT) });
     await waitUntil(() => fetch(origin).then(response => response.ok), 'local app');
     const browser = process.env.IMAGE_STUDIO_BROWSER || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
@@ -102,6 +105,14 @@ try {
     await new Promise((resolve, reject) => { socket.addEventListener('open', resolve); socket.addEventListener('error', reject); });
     socket.addEventListener('message', event => {
         const message = JSON.parse(event.data);
+        if (message.method === 'Fetch.requestPaused') {
+            folderRequests++;
+            cdp('Fetch.fulfillRequest', {
+                requestId: message.params.requestId, responseCode: 200,
+                responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+                body: Buffer.from(JSON.stringify({ folderPath: imagesDir })).toString('base64'),
+            }).catch(error => errors.push(error.message));
+        }
         if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text);
         const request = pending.get(message.id);
         if (!request) return;
@@ -112,6 +123,7 @@ try {
     });
     await cdp('Runtime.enable');
     await cdp('Page.enable');
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await waitUntil(() => evaluate("document.querySelector('#reference-profile-select')?.options.length > 0"), 'first load');
     assert.equal(await evaluate("document.querySelector('#mode-standard').getAttribute('aria-pressed')"), 'true');
     await change('#api-key', 'ordinary-first-key');
@@ -178,6 +190,87 @@ try {
         assert.equal(bytes.readUInt32BE(16), 1024);
         assert.equal(bytes.readUInt32BE(20), 1536);
     }
+    await waitUntil(() => evaluate("document.querySelector('#history-list').children.length === 2"), 'generated history');
+    const generatedEntries = await evaluate(`(async () => {
+        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 1); request.onsuccess = () => resolve(request.result); });
+        const entries = await new Promise(resolve => { const request = db.transaction('history').objectStore('history').getAll(); request.onsuccess = () => resolve(request.result); });
+        db.close(); return entries;
+    })()`);
+    assert.equal(generatedEntries.length, 2);
+    assert.equal(await evaluate("document.querySelector('#message').textContent"), 'Изображение готово и сохранено в папку');
+    for (const entry of generatedEntries) {
+        assert.ok(entry.archive?.fileName, 'New generation was not archived automatically');
+        assert.deepEqual(await fs.readFile(path.join(imagesDir, entry.archive.fileName)), Buffer.from(entry.dataUrl.split(',')[1], 'base64'));
+    }
+    // Single deletion requires confirmation and preserves archived files and refs.
+    const deletedId = await evaluate("document.querySelector('.history-item').dataset.id");
+    await evaluate('window.confirm = () => false');
+    await click('.history-delete');
+    assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 2);
+    await evaluate('window.confirm = () => true');
+    await click('.history-delete');
+    await waitUntil(() => evaluate("document.querySelector('#history-list').children.length === 1 && !document.querySelector('#history-select').disabled"), 'single history deletion');
+    assert.equal(await evaluate("document.querySelector('#result-image').classList.contains('hidden')"), true, 'Deleted current result remained on the canvas');
+    await fs.access(path.join(imagesDir, generatedEntries.find(entry => entry.id === deletedId).archive.fileName));
+    // Legacy history on later pages is visible, selectable and copied to the folder.
+    await evaluate(`(async () => {
+        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 1); request.onsuccess = () => resolve(request.result); });
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction('history', 'readwrite');
+            for (let i = 0; i < 27; i++) tx.objectStore('history').put({
+                id: 'legacy-' + i, createdAt: 1720000000000 + i, provider: 'gemini', model: 'legacy-test',
+                prompt: 'Legacy image ' + i, dataUrl: ${JSON.stringify(generatedEntries[0].dataUrl)},
+            });
+            tx.oncomplete = resolve; tx.onabort = reject;
+        });
+        db.close();
+    })()`);
+    await reload();
+    await waitUntil(() => evaluate("document.querySelector('#history-page-label').textContent.includes('28 изображений')"), 'paged history');
+    assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 12);
+    await cdp('Fetch.enable', { patterns: [{ urlPattern: `${origin}/api/images/open-folder`, requestStage: 'Request' }] });
+    await click('#open-image-folder');
+    assert.equal(await evaluate("document.querySelector('#history-select').disabled"), true, 'Deleting during a legacy import was not blocked');
+    await waitUntil(() => evaluate("!document.querySelector('#open-image-folder').disabled && document.querySelector('#history-folder-hint').textContent.startsWith('Папка:')"), 'legacy image folder import');
+    assert.equal(folderRequests, 1, 'Folder button did not request a native folder opening');
+    assert.equal((await fs.readdir(imagesDir)).length, 29, 'Legacy import missed off-page entries');
+    await click('#open-image-folder');
+    await waitUntil(() => folderRequests === 2 && evaluate("!document.querySelector('#open-image-folder').disabled"), 'second folder opening');
+    assert.equal((await fs.readdir(imagesDir)).length, 29, 'Opening the folder duplicated images');
+    await click('#history-select');
+    const firstSelectedId = await evaluate("document.querySelector('.history-item').dataset.id");
+    await click('.history-preview');
+    assert.equal(await evaluate("document.querySelector('.history-checkbox input').checked"), true);
+    await click('#history-next');
+    const secondSelectedId = await evaluate("document.querySelector('.history-item').dataset.id");
+    await click('.history-checkbox input');
+    assert.equal(await evaluate("document.querySelector('#history-selected-count').textContent"), 'Выбрано: 2');
+    await evaluate('window.confirm = () => false');
+    await click('#history-delete-selected');
+    assert.equal(await evaluate("document.querySelector('#history-page-label').textContent.includes('28 изображений')"), true);
+    await evaluate('window.confirm = () => true');
+    await click('#history-delete-selected');
+    await waitUntil(() => evaluate("document.querySelector('#history-page-label').textContent.includes('26 изображений') && !document.querySelector('#history-select').disabled"), 'cross-page selective deletion');
+    const remainingIds = await evaluate(`(async () => {
+        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 1); request.onsuccess = () => resolve(request.result); });
+        const ids = await new Promise(resolve => { const request = db.transaction('history').objectStore('history').getAllKeys(); request.onsuccess = () => resolve(request.result); });
+        db.close(); return ids;
+    })()`);
+    assert.equal(remainingIds.length, 26);
+    assert.ok(!remainingIds.includes(firstSelectedId) && !remainingIds.includes(secondSelectedId));
+    assert.equal((await fs.readdir(imagesDir)).length, 29, 'History deletion removed disk files');
+    assert.equal(await evaluate("document.querySelector('#reference-list').children.length"), 2, 'History deletion affected refs');
+    await click('#history-next');
+    assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 2);
+    await click('#history-select-page');
+    assert.equal(await evaluate("document.querySelector('#history-selected-count').textContent"), 'Выбрано: 2');
+    await click('#history-deselect');
+    assert.equal(await evaluate("document.querySelector('#history-selected-count').textContent"), 'Выбрано: 0');
+    await click('#history-select');
+    await click('.history-preview');
+    await waitUntil(() => evaluate("!document.querySelector('#result-image').classList.contains('hidden')"), 'history preview after selection');
+    await reload();
+    await waitUntil(() => evaluate("document.querySelector('#history-page-label').textContent.includes('26 изображений')"), 'history deletion persisted');
     // Different ref sets keep independent checkmarks through switching/reload.
     await evaluate("window.prompt = () => 'Second set'; document.querySelector('#reference-profile-new').click()");
     await click('.reference-toggle');
@@ -271,15 +364,39 @@ try {
         await click('#mode-standard');
         await layoutCheck();
         await click('#mode-novelai');
+        await click('#history-select');
+        await layoutCheck();
+        await click('#history-select');
     }
     await change('#proxy-enabled', true);
     await layoutCheck();
     const screenshot = await cdp('Page.captureScreenshot', { captureBeyondViewport: true, format: 'png' });
     await fs.writeFile(path.join(root, 'preview-novelai-mobile.png'), Buffer.from(screenshot.data, 'base64'));
+    await click('#history-select');
+    const historyClip = await evaluate(`(() => {
+        const box = document.querySelector('.history-panel').getBoundingClientRect();
+        return { x: box.left + window.scrollX, y: box.top + window.scrollY, width: box.width, height: box.height, scale: 1 };
+    })()`);
+    const historyScreenshot = await cdp('Page.captureScreenshot', { captureBeyondViewport: true, format: 'png', clip: historyClip });
+    await fs.writeFile(path.join(root, 'preview-history-mobile.png'), Buffer.from(historyScreenshot.data, 'base64'));
+    await evaluate('window.confirm = () => false');
+    await click('#clear-history');
+    assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 12);
+    await evaluate('window.confirm = () => true');
+    await click('#clear-history');
+    await waitUntil(() => evaluate("document.querySelector('#history-list').children.length === 0 && !document.querySelector('#open-image-folder').disabled"), 'clear all history');
+    await reload();
+    assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 0);
+    assert.equal((await fs.readdir(imagesDir)).length, 29, 'Clear history deleted archived images');
+    assert.equal(await evaluate("document.querySelector('#reference-list').children.length"), 2);
     assert.deepEqual(errors, [], 'Browser JS errors');
-    console.log('Browser checks passed: independent ordinary/NovelAI modes, automatic saving, credential/proxy isolation, legacy migration, per-mode profiles, settings/Medium preservation, ref isolation/normalization/profiles, negative presets, mobile layout');
+    console.log('Browser checks passed: folder button/legacy archive, paged and cross-page selective deletion, confirmation/cancellation, file/ref preservation, independent ordinary/NovelAI modes, automatic saving, credential/proxy isolation, legacy migration, per-mode profiles, settings/Medium preservation, ref isolation/normalization/profiles, negative presets, mobile layout');
 } finally {
     socket?.close();
     for (const request of pending.values()) clearTimeout(request.timeout);
     for (const child of children) child.kill();
+    await Promise.all(children.filter(child => child.exitCode === null).map(child => new Promise(resolve => child.once('exit', resolve))));
+    assert.equal(path.dirname(path.resolve(imagesDir)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(imagesDir).startsWith('image-studio-browser-'));
+    await fs.rm(imagesDir, { recursive: true, force: true });
 }

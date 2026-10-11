@@ -301,14 +301,35 @@
             </section>
 
             <section class="panel history-panel">
-                <div class="section-heading">
+                <div class="section-heading history-heading">
                     <div>
                         <span class="eyebrow">Локально</span>
                         <h2>История</h2>
                     </div>
-                    <button id="clear-history" class="text-button" type="button">Очистить</button>
+                    <div class="history-actions">
+                        <button id="open-image-folder" class="secondary-button" type="button" title="Открыть папку generated-images на компьютере">📁 Папка с картинками</button>
+                        <button id="history-select" class="secondary-button" type="button">Выбрать</button>
+                    </div>
+                </div>
+                <p id="history-folder-hint" class="hint history-folder-hint" role="status">Новые картинки автоматически сохраняются в локальную папку сразу после генерации. Нажимать «Скачать» или открывать папку для этого не нужно.</p>
+                <div id="history-selection" class="history-selection hidden">
+                    <div class="history-selection-row">
+                        <span id="history-selected-count">Выбрано: 0</span>
+                        <button id="history-select-page" class="text-button" type="button">Выбрать страницу</button>
+                        <button id="history-deselect" class="text-button" type="button">Снять выбор</button>
+                    </div>
+                    <div class="history-selection-row">
+                        <button id="history-delete-selected" class="secondary-button danger-text" type="button" disabled>Удалить выбранные (0)</button>
+                        <button id="clear-history" class="text-button danger-text" type="button">Удалить всю историю</button>
+                    </div>
+                    <p class="hint">Удаляется только запись из истории. Файлы в папке и картинки в референсах остаются.</p>
                 </div>
                 <div id="history-list" class="history-list"></div>
+                <div id="history-pagination" class="history-pagination hidden">
+                    <button id="history-previous" class="icon-button" type="button" aria-label="Предыдущая страница истории">‹</button>
+                    <span id="history-page-label"></span>
+                    <button id="history-next" class="icon-button" type="button" aria-label="Следующая страница истории">›</button>
+                </div>
             </section>
         </section>
     </main>

@@ -358,9 +358,40 @@ input:focus, textarea:focus, select:focus {
 .history-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
 .history-list:empty::after { content: "История пуста"; grid-column: 1 / -1; padding: 18px; color: var(--muted); text-align: center; font-size: 12px; }
 .history-item { position: relative; padding: 0; overflow: hidden; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 12px; background: #09090c; }
+.history-item.selected { border-color: var(--accent-strong); box-shadow: 0 0 0 2px var(--accent-soft); }
+.history-preview { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; color: var(--text); }
+.history-preview:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -3px; }
 .history-item img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .2s; }
-.history-item:hover img { transform: scale(1.035); }
-.history-item span { position: absolute; inset: auto 5px 5px; overflow: hidden; padding: 4px 6px; border-radius: 6px; color: #eee; background: rgba(0,0,0,.68); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.history-preview:hover img { transform: scale(1.035); }
+.history-caption { position: absolute; inset: auto 5px 5px; overflow: hidden; padding: 4px 6px; border-radius: 6px; color: #eee; background: rgba(0,0,0,.68); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+.history-heading { flex-wrap: wrap; }
+.history-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.history-folder-hint { margin: -5px 0 14px; overflow-wrap: anywhere; }
+.history-selection { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
+.history-selection-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.history-selection-row + .history-selection-row { margin-top: 9px; }
+.history-selection-row > span { color: var(--accent); font-size: 12px; }
+.history-delete, .history-checkbox {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--line-strong);
+    border-radius: 9px;
+    color: var(--text);
+    background: rgba(15, 15, 21, .85);
+    cursor: pointer;
+}
+.history-delete { font-size: 22px; }
+.history-delete:hover { color: var(--danger); }
+.history-checkbox input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent-strong); cursor: pointer; }
+.history-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; }
+.history-pagination span { color: var(--muted); font-size: 12px; text-align: center; }
 
 @media (max-width: 1050px) {
     .workspace { grid-template-columns: minmax(0, 1fr); width: min(760px, calc(100% - 28px)); }
