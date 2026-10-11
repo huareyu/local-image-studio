@@ -2,6 +2,7 @@ import http from 'node:http';
 
 const PORT = Number(process.env.MOCK_PORT || 3213);
 const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Xq7vWQAAAABJRU5ErkJggg==';
+const novelaiRequests = [];
 
 async function readBody(req) {
     const chunks = [];
@@ -16,6 +17,27 @@ function json(res, value) {
 
 http.createServer(async (req, res) => {
     const body = await readBody(req);
+    if (req.url === '/__novelai-requests') return json(res, novelaiRequests);
+    if (req.url === '/user/subscription') {
+        if (req.headers.authorization !== 'Bearer test-token') {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ message: 'Invalid token' }));
+        }
+        return json(res, { active: true, tier: 3, trainingStepsLeft: { fixedTrainingStepsLeft: 100, purchasedTrainingSteps: 20 } });
+    }
+    if (req.url === '/ai/generate-image') {
+        if (req.headers.authorization !== 'Bearer test-token') {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ message: 'Invalid token' }));
+        }
+        const payload = JSON.parse(body.toString('utf8'));
+        novelaiRequests.push(payload);
+        if (req.headers.accept !== 'application/json') {
+            res.writeHead(400);
+            return res.end('Expected JSON response negotiation');
+        }
+        return json(res, { images: [{ image: PIXEL, index: 0, seed: payload.parameters.seed }] });
+    }
     if (req.url === '/v1/models' || req.url === '/models') {
         return json(res, { data: [{ id: 'mock-image-model' }] });
     }

@@ -2,7 +2,7 @@
 
 一个运行在本机的轻量级 AI 图像生成工作台。它提供连接配置、多参考图管理、提示词编辑和本地生成历史，不依赖 SillyTavern，也不需要安装前端框架。
 
-> 当前版本：`0.2.0`<br>
+> 当前版本：`0.3.0`<br>
 > 界面语言：俄语<br>
 > 运行环境：Node.js 20 或更高版本
 
@@ -11,7 +11,7 @@
 - 创建多个独立的连接配置；
 - 每个配置可保存不同的 API 类型、Endpoint、密钥、模型和图像参数；
 - 每个连接配置可单独启用带认证信息的 HTTP/HTTPS 代理；
-- 支持 Gemini-compatible、OpenAI-compatible 和 OpenRouter；
+- 支持 Gemini-compatible、OpenAI-compatible、OpenRouter 和 NovelAI；
 - 一次上传多张参考图；
 - 创建、复制、重命名和删除参考图配置，一键切换不同的图片组合；
 - 在每个参考图配置中单独启用或停用图片；
@@ -64,6 +64,7 @@ npm start
 | Gemini-compatible | 支持 | 支持 | `:generateContent` + `inlineData` |
 | OpenAI-compatible | 支持 | 取决于模型和服务端 | `/v1/images/generations` 或 `/v1/images/edits` |
 | OpenRouter | 支持 | 支持的模型可用 | `/chat/completions` + image modalities |
+| NovelAI | 支持 | V4.5 Precise Reference | `/ai/generate-image`，使用个人 Persistent API Token |
 
 ### Endpoint 规则
 
@@ -73,6 +74,7 @@ npm start
 https://api.openai.com
 https://generativelanguage.googleapis.com
 https://openrouter.ai/api/v1
+https://image.novelai.net
 ```
 
 程序会自动补充对应的 API 路径。
@@ -82,6 +84,34 @@ https://openrouter.ai/api/v1
 ### OpenAI 参考图
 
 当选择了参考图时，OpenAI-compatible 配置会自动改用 `/v1/images/edits`。因此模型与服务端必须支持图像编辑及 multipart 上传。若服务端只实现 `/v1/images/generations`，请取消所有参考图。
+
+### NovelAI：使用自己的密钥
+
+1. 在连接配置的 API 类型中选择 `NovelAI`；
+2. 使用默认 Endpoint：`https://image.novelai.net`；
+3. 在 NovelAI 的 `User Settings → Account → Get Persistent API Token` 中获取密钥，粘贴到本工具的 API 密钥字段；
+4. 点击“检查密钥”确认连接，然后选择模型并填写提示词。
+
+模型输入框提供 V5 Full、V5 Full Medium、V5 Curated、V4.5、V4、V3 与 Furry V3 的预设 ID，也允许直接输入自己的模型 ID。`↻` 显示内置图片模型列表；检查密钥请使用单独的按钮。
+
+参数规则沿用 Novarakk，并依据 NovelAI 官方资料核对。每个连接配置独立保存采样器、Scheduler、Steps、Prompt Guidance、CFG Rescale、尺寸、Seed、Anlas Guard、负面提示词、参考图选项以及名字到标签的替换规则。默认采样器为 Euler Ancestral，Scheduler 为 native，Steps 为 28，Guidance 为 5，CFG Rescale 为 0，尺寸为 832×1216。
+
+负面提示词不会追加到正面提示词中。NovelAI 的负面模板可以创建、修改、重命名和删除，并与其他 API 的负面提示词分开保存。Seed 默认为 `-1`（随机），实际使用的 Seed 会显示在结果下方并保存到历史。
+
+模型限制：
+
+- V5 Full / Curated：支持可调 Steps、Sampler、Scheduler、Guidance、Rescale 和负面提示词；不发送 Precise Reference、Decrisper、Variety+ 或 SMEA；
+- V5 Medium：固定 14 Steps 与 Euler Ancestral，CFG Rescale 为 0，不发送用户自定义负面提示词；
+- V4.5：支持 Precise Reference，可选人物、风格或两者；自动将图片缩放并填充到官方接受的三个尺寸之一，每次最多发送五张；
+- V3：可以启用 SMEA / SMEA Dynamic；DDIM 会禁用这两个选项。
+
+不支持参考图的模型或关闭参考图开关时，图片与关联描述都会从请求中排除，参考图面板也会隐藏。已有图库和参考图配置仍会保留。切换到 Medium 不会覆盖其他模型保存的 Steps、Sampler、Rescale 或负面提示词。
+
+Anlas Guard 将请求限制在 28 Steps 和 1,048,576 像素以内；Medium 仍为 14 Steps。免费生成取决于订阅和服务端限制，参考图等附加功能仍可能收费。
+
+默认请求使用 `Authorization: Bearer <token>`，通过 `Accept: application/json` 获取官方 JSON 图片响应，也兼容返回 ZIP 的端点。已有 HTTP/HTTPS 代理同样适用于 NovelAI。
+
+官方资料：[Image API](https://image.novelai.net/docs/index.html)、[获取 Persistent API Token](https://docs.novelai.net/en/text/usersettings/account/)、[Medium Effort](https://docs.novelai.net/en/image/effort/)、[Precise Reference](https://docs.novelai.net/en/image/precisereference/)。
 
 ## 连接配置
 
@@ -103,7 +133,7 @@ https://openrouter.ai/api/v1
 
 ### 代理
 
-在连接配置中启用代理后，该配置的模型列表、生成请求以及远程结果图片下载都会通过所填的 HTTP/HTTPS 代理发送。代理设置不会影响其他连接配置。可点击模型字段旁的 `↻` 来快速验证连接是否可用。
+在连接配置中启用代理后，该配置的远程模型列表、生成请求以及远程结果图片下载都会通过所填的 HTTP/HTTPS 代理发送。代理设置不会影响其他连接配置。一般 API 可点击模型字段旁的 `↻` 验证连接；NovelAI 使用“检查密钥”按钮。
 
 ## 参考图库
 
@@ -136,10 +166,15 @@ image-studio/
 ├─ public/
 │  ├─ index.html       # 页面结构
 │  ├─ styles.css       # 响应式界面
-│  └─ app.js           # 配置、图库、历史和前端逻辑
+│  ├─ app.js           # 配置、图库、历史和前端逻辑
+│  └─ novelai.js       # 前后端共用的 NovelAI 参数规则
+├─ lib/
+│  └─ novelai-result.mjs # JSON / ZIP 图片响应解析
 ├─ tests/
 │  ├─ mock-provider.mjs
 │  ├─ mock-proxy.mjs
+│  ├─ novelai.test.mjs
+│  ├─ browser.mjs
 │  └─ smoke.mjs
 ├─ server.mjs          # 静态服务器与 API 代理
 ├─ start-local.bat     # Windows 快速启动
@@ -151,7 +186,7 @@ image-studio/
 无需真实 API 密钥即可运行本地 smoke test：
 
 ```powershell
-node tests/smoke.mjs
+npm test
 ```
 
 测试包含：
@@ -163,10 +198,21 @@ node tests/smoke.mjs
 - OpenRouter 图像请求；
 - 模型列表读取。
 - 带账号密码的 HTTP 代理路由。
+- NovelAI 个人密钥、JSON / ZIP 响应、各代模型限制与参考图描述隔离。
+
+还可以使用本机 Edge 执行浏览器检查：
+
+```powershell
+npm run test:browser
+```
+
+浏览器检查使用本地模拟 API，不会触发真实付费生成；覆盖配置切换、Medium 参数保留、参考图归一化、模板保存以及手机布局。可通过 `IMAGE_STUDIO_BROWSER` 指定其他 Chromium 浏览器路径。
 
 ## 当前限制
 
-- NovelAI、Naistera 等专用协议尚未加入独立版本；
+- Naistera 等其他专用协议尚未加入独立版本；
+- NovelAI 暂不提供 img2img、inpainting、流式生成或独立角色提示词编辑器；
+- 未知自定义模型 ID 的兼容性取决于所用端点；
 - OpenAI-compatible 服务对多参考图字段的实现可能不同；
 - 历史记录仅保存在当前浏览器中，没有云同步；
 - 没有用户账户或远程访问功能。

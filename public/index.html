@@ -47,9 +47,12 @@
                             <option value="gemini">Gemini-compatible</option>
                             <option value="openai">OpenAI-compatible</option>
                             <option value="openrouter">OpenRouter</option>
+                            <option value="novelai">NovelAI</option>
                         </select>
                     </label>
                 </div>
+
+                <p id="novelai-key-hint" class="hint hidden">Вставь свой Persistent API Token. Его можно получить в NovelAI: User Settings → Account → Get Persistent API Token. <a href="https://docs.novelai.net/en/text/usersettings/account/" target="_blank" rel="noopener noreferrer">Где взять ключ</a></p>
 
                 <label>
                     <span>Endpoint</span>
@@ -111,6 +114,67 @@
                     <span>Сохранять API-ключ и пароль прокси в этом браузере</span>
                 </label>
                 <p class="hint">В профиль сохраняются тип API, endpoint, прокси, ключ, модель и параметры изображения. Галерея референсов и история общие для всех профилей.</p>
+            </section>
+
+            <section id="novelai-panel" class="panel novelai-panel hidden">
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">Параметры генерации</span>
+                        <h2>NovelAI</h2>
+                    </div>
+                    <button id="novelai-test-key" class="secondary-button" type="button">Проверить ключ</button>
+                </div>
+                <p id="novelai-model-hint" class="hint"></p>
+                <div class="form-grid two">
+                    <label><span>Сэмплер</span><select id="novelai-sampler"></select></label>
+                    <label><span>Scheduler</span><select id="novelai-scheduler"></select></label>
+                    <label><span>Шаги</span><input id="novelai-steps" type="number" min="1" max="50" step="1" title="Anlas Guard ограничивает до 28; Medium всегда использует 14."></label>
+                    <label><span>Prompt Guidance · CFG Scale</span><input id="novelai-scale" type="number" min="0" max="30" step="0.5" title="Насколько сильно модель следует промпту. По умолчанию 5."></label>
+                    <label><span>CFG Rescale</span><input id="novelai-cfg-rescale" type="number" min="0" max="1" step="0.05" title="Уменьшает перенасыщенность от высокого CFG. 0 — отключено."></label>
+                    <label><span>Размер</span><select id="novelai-size"></select></label>
+                </div>
+                <label><span>Seed <small>−1 — случайный</small></span><input id="novelai-seed" type="number" min="-1" step="1"></label>
+                <label class="check-row compact"><input id="novelai-anlas-guard" type="checkbox"><span>Anlas Guard: до 28 шагов и 1 048 576 пикселей</span></label>
+                <p class="hint">Ограничивает параметры для лимитов бесплатных генераций Opus. Референсы могут стоить Anlas даже при включённом Guard.</p>
+
+                <div id="novelai-negative-box" class="novelai-settings-box">
+                    <label><span>Негативный промпт · только NovelAI</span><textarea id="novelai-negative" rows="4" placeholder="text, watermark, low quality…"></textarea></label>
+                    <div class="preset-picker">
+                        <select id="novelai-negative-preset" aria-label="Шаблон негатива NovelAI"></select>
+                        <button id="novelai-negative-save" class="icon-button" type="button" title="Сохранить изменения шаблона" aria-label="Сохранить шаблон">✓</button>
+                        <button id="novelai-negative-new" class="icon-button" type="button" title="Новый шаблон" aria-label="Новый шаблон">＋</button>
+                        <button id="novelai-negative-rename" class="icon-button" type="button" title="Переименовать шаблон" aria-label="Переименовать шаблон">✎</button>
+                        <button id="novelai-negative-delete" class="icon-button danger" type="button" title="Удалить шаблон" aria-label="Удалить шаблон">×</button>
+                    </div>
+                    <p class="hint">Выбери шаблон, чтобы загрузить его текст. Кнопка ✓ сохраняет изменения; ＋ создаёт свой шаблон.</p>
+                </div>
+
+                <div class="novelai-settings-box">
+                    <label class="check-row"><input id="novelai-enable-references" type="checkbox"><span>Отправлять референсы в NovelAI</span></label>
+                    <p id="novelai-reference-hint" class="hint"></p>
+                    <div id="novelai-reference-options">
+                        <label><span>Тип референса</span><select id="novelai-reference-type"><option value="character">Персонаж</option><option value="style">Стиль</option><option value="character&style">Персонаж и стиль</option></select></label>
+                        <div class="form-grid two">
+                            <label><span>Сила референса</span><input id="novelai-reference-strength" type="number" min="-1" max="1" step="0.05" title="Влияние визуальных деталей референса. По умолчанию 1."></label>
+                            <label><span>Fidelity · точность</span><input id="novelai-reference-fidelity" type="number" min="-1" max="1" step="0.05" title="Строгость соблюдения референса. По умолчанию 0.75."></label>
+                        </div>
+                    </div>
+                </div>
+
+                <details class="novelai-advanced">
+                    <summary>Дополнительные параметры</summary>
+                    <label class="check-row"><input id="novelai-decrisper" type="checkbox"><span>Decrisper · dynamic thresholding</span></label>
+                    <label class="check-row"><input id="novelai-variety-boost" type="checkbox"><span>Variety+</span></label>
+                    <label class="check-row"><input id="novelai-sm" type="checkbox"><span>SMEA</span></label>
+                    <label class="check-row"><input id="novelai-sm-dyn" type="checkbox"><span>SMEA Dynamic</span></label>
+                    <p class="hint">Decrisper и Variety+ доступны до V5. SMEA — для V3, кроме DDIM. Неактивные параметры не отправляются.</p>
+                </details>
+                <details class="novelai-advanced">
+                    <summary>Замены имён на теги</summary>
+                    <p class="hint">Например, Zach → 1boy, ash brown hair, heterochromia. Применяются к промпту только в NovelAI.</p>
+                    <div id="novelai-tag-list" class="novelai-tag-list"></div>
+                    <button id="novelai-tag-add" class="secondary-button" type="button">＋ Добавить замену</button>
+                </details>
             </section>
 
             <section class="panel references-panel">
@@ -202,6 +266,7 @@
                     <div>
                         <span class="eyebrow">Результат</span>
                         <h2 id="result-title">Холст</h2>
+                        <p id="result-meta" class="hint hidden"></p>
                     </div>
                     <div id="result-actions" class="result-actions hidden">
                         <button id="download-result" class="secondary-button" type="button">↓ Скачать</button>

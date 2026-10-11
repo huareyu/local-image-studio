@@ -1,11 +1,12 @@
 {
   "name": "local-image-studio",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node tests/smoke.mjs"
+    "test": "node --test tests/novelai.test.mjs && node tests/smoke.mjs",
+    "test:browser": "node tests/browser.mjs"
   },
   "engines": {
     "node": ">=20"

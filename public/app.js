@@ -1,3 +1,9 @@
+import {
+    NOVELAI_ENDPOINT, NOVELAI_MODELS, NOVELAI_SAMPLERS, NOVELAI_SCHEDULERS, NOVELAI_SIZES,
+    NOVELAI_DEFAULTS, DEFAULT_NOVELAI_NEGATIVE, novelaiCapabilities,
+    novelaiReferencesEnabled, novelaiDimensions, normalizeNovelaiReference,
+} from './novelai.js';
+
 const $ = (selector) => document.querySelector(selector);
 
 const STORAGE_KEYS = {
@@ -7,12 +13,14 @@ const STORAGE_KEYS = {
     draft: 'image-studio.draft.v1',
     referenceProfiles: 'image-studio.reference-profiles.v1',
     activeReferenceProfile: 'image-studio.active-reference-profile.v1',
+    novelaiNegativePresets: 'image-studio.novelai-negative-presets.v1',
 };
 
 const PROVIDER_DEFAULTS = {
     gemini: 'https://generativelanguage.googleapis.com',
     openai: 'https://api.openai.com',
     openrouter: 'https://openrouter.ai/api/v1',
+    novelai: NOVELAI_ENDPOINT,
 };
 
 const els = {
@@ -58,6 +66,7 @@ const els = {
     loadingState: $('#loading-state'),
     resultImage: $('#result-image'),
     resultTitle: $('#result-title'),
+    resultMeta: $('#result-meta'),
     resultActions: $('#result-actions'),
     downloadResult: $('#download-result'),
     resultToReference: $('#result-to-reference'),
@@ -66,6 +75,39 @@ const els = {
     message: $('#message'),
     historyList: $('#history-list'),
     clearHistory: $('#clear-history'),
+    novelaiPanel: $('#novelai-panel'),
+    novelaiKeyHint: $('#novelai-key-hint'),
+    novelaiModelHint: $('#novelai-model-hint'),
+    novelaiReferenceHint: $('#novelai-reference-hint'),
+    novelaiReferenceOptions: $('#novelai-reference-options'),
+    novelaiTestKey: $('#novelai-test-key'),
+    novelaiNegativePreset: $('#novelai-negative-preset'),
+    novelaiNegativeSave: $('#novelai-negative-save'),
+    novelaiNegativeNew: $('#novelai-negative-new'),
+    novelaiNegativeRename: $('#novelai-negative-rename'),
+    novelaiNegativeDelete: $('#novelai-negative-delete'),
+    novelaiTagList: $('#novelai-tag-list'),
+    novelaiTagAdd: $('#novelai-tag-add'),
+};
+
+const NOVELAI_FIELDS = {
+    novelaiSampler: $('#novelai-sampler'),
+    novelaiScheduler: $('#novelai-scheduler'),
+    novelaiSteps: $('#novelai-steps'),
+    novelaiScale: $('#novelai-scale'),
+    novelaiCfgRescale: $('#novelai-cfg-rescale'),
+    novelaiSize: $('#novelai-size'),
+    novelaiSeed: $('#novelai-seed'),
+    novelaiNegativePrompt: $('#novelai-negative'),
+    novelaiAnlasGuard: $('#novelai-anlas-guard'),
+    novelaiDecrisper: $('#novelai-decrisper'),
+    novelaiVarietyBoost: $('#novelai-variety-boost'),
+    novelaiSm: $('#novelai-sm'),
+    novelaiSmDyn: $('#novelai-sm-dyn'),
+    novelaiEnableReferences: $('#novelai-enable-references'),
+    novelaiReferenceType: $('#novelai-reference-type'),
+    novelaiReferenceStrength: $('#novelai-reference-strength'),
+    novelaiReferenceFidelity: $('#novelai-reference-fidelity'),
 };
 
 const defaultProfile = () => ({
@@ -85,6 +127,8 @@ const defaultProfile = () => ({
     imageSize: '1K',
     size: '1024x1024',
     quality: '',
+    ...NOVELAI_DEFAULTS,
+    novelaiTagPresets: [],
 });
 
 let profiles = [];
@@ -95,6 +139,9 @@ let activeReferenceProfileId = '';
 let currentResult = null;
 let generationController = null;
 let saveDraftTimer = null;
+let novelaiValues = { ...NOVELAI_DEFAULTS };
+let novelaiTagPresets = [];
+let novelaiNegativePresets = [];
 
 function readJson(storage, key, fallback) {
     try {
@@ -146,7 +193,7 @@ function currentProfile() {
 }
 
 function providerLabel(provider) {
-    return provider === 'gemini' ? 'Gemini' : provider === 'openrouter' ? 'OpenRouter' : 'OpenAI';
+    return { gemini: 'Gemini', openrouter: 'OpenRouter', openai: 'OpenAI', novelai: 'NovelAI' }[provider] || provider;
 }
 
 function renderProfileOptions() {
@@ -161,6 +208,7 @@ function renderProfileOptions() {
 function putProfileIntoForm(profile) {
     els.profileName.value = profile.name || '';
     els.provider.value = profile.provider || 'gemini';
+    els.provider.dataset.current = els.provider.value;
     els.endpoint.value = profile.endpoint || PROVIDER_DEFAULTS[profile.provider] || '';
     els.rawEndpoint.checked = Boolean(profile.rawEndpoint);
     els.proxyEnabled.checked = Boolean(profile.proxyEnabled);
@@ -174,11 +222,21 @@ function putProfileIntoForm(profile) {
     els.imageSize.value = profile.imageSize || '';
     els.openaiSize.value = profile.size || '';
     els.quality.value = profile.quality || '';
+    novelaiValues = { ...NOVELAI_DEFAULTS, ...Object.fromEntries(Object.keys(NOVELAI_DEFAULTS).map(key => [key, profile[key] ?? NOVELAI_DEFAULTS[key]])) };
+    novelaiTagPresets = structuredClone(profile.novelaiTagPresets || []);
+    for (const [key, field] of Object.entries(NOVELAI_FIELDS)) {
+        if (field.type === 'checkbox') field.checked = Boolean(novelaiValues[key]);
+        else field.value = novelaiValues[key];
+    }
+    renderNovelaiNegativePresets();
+    renderNovelaiTagPresets();
     syncProviderFields();
+    syncNovelaiControls({ capture: false });
     syncProxyFields();
 }
 
 function readProfileFromForm(profile = currentProfile()) {
+    captureNovelaiValues();
     return {
         ...profile,
         name: els.profileName.value.trim() || 'Без названия',
@@ -196,6 +254,8 @@ function readProfileFromForm(profile = currentProfile()) {
         imageSize: els.imageSize.value,
         size: els.openaiSize.value,
         quality: els.quality.value,
+        ...novelaiValues,
+        novelaiTagPresets: structuredClone(novelaiTagPresets),
     };
 }
 
@@ -210,9 +270,120 @@ function saveActiveProfile({ notify = true } = {}) {
 
 function syncProviderFields() {
     const provider = els.provider.value;
+    const isNovelai = provider === 'novelai';
+    els.novelaiPanel.classList.toggle('hidden', !isNovelai);
+    els.novelaiKeyHint.classList.toggle('hidden', !isNovelai);
+    els.negativePrompt.closest('label').classList.toggle('hidden', isNovelai);
+    $('.params-grid').classList.toggle('hidden', isNovelai);
+    els.modelOptions.innerHTML = '';
+    if (isNovelai) for (const model of NOVELAI_MODELS) els.modelOptions.append(new Option(model, model));
+    els.loadModels.title = isNovelai ? 'Показать встроенный список моделей NovelAI' : 'Загрузить список моделей';
     els.imageSize.closest('label')?.classList.toggle('hidden', provider !== 'gemini' && provider !== 'openrouter');
     els.aspectRatio.closest('label')?.classList.toggle('hidden', provider === 'openai');
     els.openaiSize.closest('label')?.classList.toggle('hidden', provider !== 'openai');
+}
+
+function captureNovelaiValues() {
+    for (const [key, field] of Object.entries(NOVELAI_FIELDS)) {
+        if (field.disabled) continue;
+        novelaiValues[key] = field.type === 'checkbox' ? field.checked
+            : field.type === 'number' ? (field.value === '' ? NOVELAI_DEFAULTS[key] : Number(field.value)) : field.value;
+    }
+}
+
+function syncNovelaiControls({ capture = true } = {}) {
+    if (capture) captureNovelaiValues();
+    const isNovelai = els.provider.value === 'novelai';
+    const caps = novelaiCapabilities(els.model.value);
+    const setControl = (key, supported, fixed = null) => {
+        const field = NOVELAI_FIELDS[key];
+        field.disabled = !supported;
+        if (field.type === 'checkbox') field.checked = supported && Boolean(novelaiValues[key]);
+        else field.value = fixed ?? novelaiValues[key];
+    };
+    setControl('novelaiSteps', !caps.medium, caps.fixedSteps);
+    setControl('novelaiSampler', !caps.medium, caps.fixedSampler);
+    setControl('novelaiCfgRescale', caps.cfgRescale, caps.cfgRescale ? null : 0);
+    setControl('novelaiNegativePrompt', caps.negativePrompt);
+    setControl('novelaiDecrisper', caps.decrisper);
+    setControl('novelaiVarietyBoost', caps.varietyBoost);
+    const smeaAvailable = caps.smea && NOVELAI_FIELDS.novelaiSampler.value !== 'ddim';
+    setControl('novelaiSm', smeaAvailable);
+    setControl('novelaiSmDyn', smeaAvailable);
+    setControl('novelaiEnableReferences', caps.preciseReference);
+    const refsEnabled = novelaiReferencesEnabled({ ...novelaiValues, model: els.model.value });
+    $('.references-panel').classList.toggle('hidden', isNovelai && !refsEnabled);
+    els.novelaiReferenceOptions.classList.toggle('hidden', !refsEnabled);
+    $('#novelai-negative-box').classList.toggle('hidden', !caps.negativePrompt);
+    const { width, height, steps } = novelaiDimensions({ ...novelaiValues, model: els.model.value });
+    const restrictions = caps.medium
+        ? 'V5 Medium: 14 шагов, Euler Ancestral, без пользовательского негатива и CFG Rescale.'
+        : caps.v5 ? 'V5: шаги, сэмплер, scheduler, CFG и негатив доступны. Референсы, Decrisper, Variety+ и SMEA недоступны.'
+            : /^nai-diffusion-4-5(?:-|$)/i.test(els.model.value) ? 'V4.5: доступны Precise Reference, Decrisper и Variety+. SMEA недоступен.'
+                : caps.preciseReference ? 'Свой ID модели: совместимость дополнительных параметров и референсов зависит от endpoint.'
+                    : 'Референсы Precise Reference для этой модели недоступны.';
+    els.novelaiModelHint.textContent = `${restrictions} В запрос пойдёт ${width}×${height}, ${steps} шагов.`;
+    els.novelaiReferenceHint.textContent = !caps.preciseReference
+        ? 'Precise Reference доступен только на V4.5. Картинки и связанные описания не отправляются.'
+        : refsEnabled ? `${/^nai-diffusion-4-5(?:-|$)/i.test(els.model.value) ? '' : 'Для своего ID отправка экспериментальная. '}До 5 референсов. Каждый увеличивает стоимость; несколько персонажей могут смешиваться.`
+            : 'Выключено: картинки и связанные описания не отправляются. Наборы сохранены.';
+    updateReferenceCount();
+}
+
+function loadNovelaiNegativePresets() {
+    const stored = readJson(localStorage, STORAGE_KEYS.novelaiNegativePresets, null);
+    novelaiNegativePresets = Array.isArray(stored) ? stored.filter(item => item && typeof item.id === 'string') : [{
+        id: 'default-quality-anatomy', name: 'Качество и анатомия', value: DEFAULT_NOVELAI_NEGATIVE,
+    }];
+}
+
+function renderNovelaiNegativePresets() {
+    els.novelaiNegativePreset.innerHTML = '';
+    els.novelaiNegativePreset.append(new Option('Свой текст · без шаблона', ''));
+    for (const preset of novelaiNegativePresets) els.novelaiNegativePreset.append(new Option(preset.name, preset.id));
+    els.novelaiNegativePreset.value = novelaiValues.novelaiNegativePresetId || '';
+    if (els.novelaiNegativePreset.selectedIndex < 0) els.novelaiNegativePreset.value = '';
+    novelaiValues.novelaiNegativePresetId = els.novelaiNegativePreset.value;
+    const hasPreset = Boolean(els.novelaiNegativePreset.value);
+    els.novelaiNegativeSave.disabled = !hasPreset;
+    els.novelaiNegativeRename.disabled = !hasPreset;
+    els.novelaiNegativeDelete.disabled = !hasPreset;
+}
+
+function persistNovelaiNegativePresets() {
+    localStorage.setItem(STORAGE_KEYS.novelaiNegativePresets, JSON.stringify(novelaiNegativePresets));
+    renderNovelaiNegativePresets();
+}
+
+function renderNovelaiTagPresets() {
+    els.novelaiTagList.replaceChildren();
+    for (const preset of novelaiTagPresets) {
+        const row = document.createElement('div');
+        row.className = 'novelai-tag-row';
+        const enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.checked = preset.enabled !== false;
+        enabled.setAttribute('aria-label', 'Включить замену');
+        const name = document.createElement('input');
+        name.placeholder = 'Имя или ключ';
+        name.value = preset.name || '';
+        const value = document.createElement('textarea');
+        value.placeholder = 'Теги, которые подставить';
+        value.value = preset.value || '';
+        const remove = document.createElement('button');
+        remove.className = 'icon-button danger';
+        remove.textContent = '×';
+        remove.title = 'Удалить замену';
+        enabled.addEventListener('change', () => { preset.enabled = enabled.checked; });
+        name.addEventListener('input', () => { preset.name = name.value.trim(); });
+        value.addEventListener('input', () => { preset.value = value.value.trim(); });
+        remove.addEventListener('click', () => {
+            novelaiTagPresets = novelaiTagPresets.filter(item => item !== preset);
+            renderNovelaiTagPresets();
+        });
+        row.append(enabled, name, remove, value);
+        els.novelaiTagList.append(row);
+    }
 }
 
 function syncProxyFields() {
@@ -375,7 +546,9 @@ async function addReferenceFiles(fileList) {
 }
 
 function updateReferenceCount() {
-    const active = references.filter(reference => isReferenceEnabled(reference.id)).length;
+    const canSend = els.provider.value !== 'novelai'
+        || novelaiReferencesEnabled({ ...novelaiValues, model: els.model.value });
+    const active = canSend ? references.filter(reference => isReferenceEnabled(reference.id)).length : 0;
     els.referenceCount.textContent = active === references.length ? String(active) : `${active}/${references.length}`;
 }
 
@@ -463,6 +636,8 @@ function displayResult(entry) {
     els.resultImage.src = entry.dataUrl;
     els.resultImage.alt = entry.prompt || 'Сгенерированное изображение';
     els.resultTitle.textContent = `${entry.model || 'Результат'} · ${providerLabel(entry.provider)}`;
+    els.resultMeta.textContent = [entry.width && entry.height ? `${entry.width}×${entry.height}` : '', entry.seed == null ? '' : `Seed: ${entry.seed}`].filter(Boolean).join(' · ');
+    els.resultMeta.classList.toggle('hidden', !els.resultMeta.textContent);
     setGenerating(false);
 }
 
@@ -489,23 +664,39 @@ async function generate() {
         els.model.focus();
         return;
     }
+    if (profile.provider === 'novelai' && !profile.apiKey) {
+        showMessage('Вставь свой Persistent API Token NovelAI в поле API-ключа');
+        els.apiKey.focus();
+        return;
+    }
     generationController = new AbortController();
+    const controller = generationController;
     setGenerating(true);
-    const activeRefs = references.filter(reference => isReferenceEnabled(reference.id)).map(reference => ({
+    const refsAllowed = profile.provider !== 'novelai' || novelaiReferencesEnabled(profile);
+    let activeRefs = (refsAllowed ? references : []).filter(reference => isReferenceEnabled(reference.id)).map(reference => ({
         dataUrl: reference.dataUrl,
         label: reference.label,
         description: reference.description,
     }));
+    const prompt = els.prompt.value.trim();
+    const prefix = els.prefix.value.trim();
+    const negativePrompt = profile.provider === 'novelai' ? profile.novelaiNegativePrompt : els.negativePrompt.value.trim();
     try {
+        if (profile.provider === 'novelai') {
+            activeRefs = await Promise.all(activeRefs.slice(0, 5).map(async reference => ({
+                ...reference, dataUrl: await normalizeNovelaiReference(reference.dataUrl),
+            })));
+        }
+        if (controller.signal.aborted) throw new DOMException('Generation cancelled', 'AbortError');
         const response = await fetch('/api/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            signal: generationController.signal,
+            signal: controller.signal,
             body: JSON.stringify({
                 profile,
-                prompt: els.prompt.value.trim(),
-                prefix: els.prefix.value.trim(),
-                negativePrompt: els.negativePrompt.value.trim(),
+                prompt,
+                prefix,
+                negativePrompt,
                 references: activeRefs,
                 aspectRatio: profile.aspectRatio,
                 imageSize: profile.imageSize,
@@ -521,11 +712,14 @@ async function generate() {
             provider: result.provider || profile.provider,
             model: result.model || profile.model,
             profileName: profile.name,
-            prompt: els.prompt.value.trim(),
-            prefix: els.prefix.value.trim(),
-            negativePrompt: els.negativePrompt.value.trim(),
+            prompt,
+            prefix,
+            negativePrompt: result.negativePrompt ?? negativePrompt,
             createdAt: Date.now(),
-            referenceCount: activeRefs.length,
+            referenceCount: result.referenceCount ?? activeRefs.length,
+            seed: result.seed,
+            width: result.width,
+            height: result.height,
         };
         await dbPut('history', entry);
         displayResult(entry);
@@ -558,11 +752,35 @@ async function renderHistory() {
             displayResult(entry);
             els.prompt.value = entry.prompt || '';
             els.prefix.value = entry.prefix || '';
-            els.negativePrompt.value = entry.negativePrompt || '';
+            if (els.provider.value === 'novelai') {
+                NOVELAI_FIELDS.novelaiNegativePrompt.value = entry.negativePrompt || '';
+                novelaiValues.novelaiNegativePrompt = entry.negativePrompt || '';
+            } else els.negativePrompt.value = entry.negativePrompt || '';
             saveDraftSoon();
             window.scrollTo({ top: 0, behavior: 'smooth' });
         });
         els.historyList.append(button);
+    }
+}
+
+async function testNovelaiKey() {
+    saveActiveProfile({ notify: false });
+    els.novelaiTestKey.disabled = true;
+    clearMessage();
+    try {
+        const response = await fetch('/api/novelai/status', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profile: currentProfile() }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error([result.error, result.details].filter(Boolean).join('\n'));
+        const balance = result.anlas;
+        const amount = balance ? Number(balance.fixedTrainingStepsLeft || 0) + Number(balance.purchasedTrainingSteps || 0) : null;
+        showMessage(`Ключ NovelAI работает${result.active === false ? ' · подписка неактивна' : ''}${amount == null ? '' : ` · Anlas: ${amount}`}`, 'success');
+    } catch (error) {
+        showMessage(error.message || String(error));
+    } finally {
+        els.novelaiTestKey.disabled = false;
     }
 }
 
@@ -582,7 +800,7 @@ async function loadModelList() {
         if (!response.ok) throw new Error([result.error, result.details].filter(Boolean).join('\n'));
         els.modelOptions.innerHTML = '';
         for (const model of result.models || []) els.modelOptions.append(new Option(model, model));
-        showMessage(`Загружено моделей: ${result.models?.length || 0}`, 'success');
+        showMessage(`${result.catalog ? 'Встроенный список моделей' : 'Загружено моделей'}: ${result.models?.length || 0}`, 'success');
         els.model.focus();
     } catch (error) {
         showMessage(error.message || String(error));
@@ -594,9 +812,11 @@ async function loadModelList() {
 
 function bindEvents() {
     els.profileSelect.addEventListener('change', () => {
+        const selectedId = els.profileSelect.value;
         saveActiveProfile({ notify: false });
-        activeProfileId = els.profileSelect.value;
+        activeProfileId = selectedId;
         localStorage.setItem(STORAGE_KEYS.activeProfile, activeProfileId);
+        renderProfileOptions();
         putProfileIntoForm(currentProfile());
     });
     els.profileSave.addEventListener('click', () => saveActiveProfile());
@@ -621,12 +841,18 @@ function bindEvents() {
         putProfileIntoForm(currentProfile());
     });
     els.provider.addEventListener('change', (event) => {
-        const previousProvider = currentProfile().provider;
+        const previousProvider = els.provider.dataset.current || currentProfile().provider;
         const oldDefault = PROVIDER_DEFAULTS[previousProvider];
         if (!els.endpoint.value.trim() || els.endpoint.value.trim() === oldDefault) {
             els.endpoint.value = PROVIDER_DEFAULTS[event.target.value];
         }
+        const profile = currentProfile();
+        profile.modelsByProvider = { ...profile.modelsByProvider, [previousProvider]: els.model.value };
+        els.model.value = profile.modelsByProvider[event.target.value]
+            || (event.target.value === 'novelai' ? 'nai-diffusion-4-5-full' : '');
+        els.provider.dataset.current = event.target.value;
         syncProviderFields();
+        syncNovelaiControls();
     });
     els.toggleKey.addEventListener('click', () => {
         els.apiKey.type = els.apiKey.type === 'password' ? 'text' : 'password';
@@ -636,6 +862,54 @@ function bindEvents() {
         els.proxyPassword.type = els.proxyPassword.type === 'password' ? 'text' : 'password';
     });
     els.loadModels.addEventListener('click', loadModelList);
+    els.model.addEventListener('input', () => syncNovelaiControls());
+    for (const field of Object.values(NOVELAI_FIELDS)) {
+        field.addEventListener('change', () => syncNovelaiControls());
+    }
+    els.novelaiTestKey.addEventListener('click', testNovelaiKey);
+    els.novelaiNegativePreset.addEventListener('change', () => {
+        novelaiValues.novelaiNegativePresetId = els.novelaiNegativePreset.value;
+        const preset = novelaiNegativePresets.find(item => item.id === els.novelaiNegativePreset.value);
+        if (preset) {
+            novelaiValues.novelaiNegativePrompt = preset.value;
+            NOVELAI_FIELDS.novelaiNegativePrompt.value = preset.value;
+        }
+        renderNovelaiNegativePresets();
+    });
+    els.novelaiNegativeNew.addEventListener('click', () => {
+        const name = window.prompt('Название шаблона негатива')?.trim();
+        if (!name) return;
+        const preset = { id: crypto.randomUUID(), name, value: NOVELAI_FIELDS.novelaiNegativePrompt.value };
+        novelaiNegativePresets.push(preset);
+        novelaiValues.novelaiNegativePresetId = preset.id;
+        persistNovelaiNegativePresets();
+    });
+    els.novelaiNegativeSave.addEventListener('click', () => {
+        const preset = novelaiNegativePresets.find(item => item.id === els.novelaiNegativePreset.value);
+        if (!preset) return;
+        preset.value = NOVELAI_FIELDS.novelaiNegativePrompt.value;
+        persistNovelaiNegativePresets();
+        showMessage('Шаблон негатива сохранён', 'success');
+    });
+    els.novelaiNegativeRename.addEventListener('click', () => {
+        const preset = novelaiNegativePresets.find(item => item.id === els.novelaiNegativePreset.value);
+        if (!preset) return;
+        const name = window.prompt('Новое название шаблона', preset.name)?.trim();
+        if (!name) return;
+        preset.name = name;
+        persistNovelaiNegativePresets();
+    });
+    els.novelaiNegativeDelete.addEventListener('click', () => {
+        const preset = novelaiNegativePresets.find(item => item.id === els.novelaiNegativePreset.value);
+        if (!preset || !confirm(`Удалить шаблон «${preset.name}»? Текущий текст останется.`)) return;
+        novelaiNegativePresets = novelaiNegativePresets.filter(item => item.id !== preset.id);
+        novelaiValues.novelaiNegativePresetId = '';
+        persistNovelaiNegativePresets();
+    });
+    els.novelaiTagAdd.addEventListener('click', () => {
+        novelaiTagPresets.push({ id: crypto.randomUUID(), enabled: true, name: '', value: '' });
+        renderNovelaiTagPresets();
+    });
 
     els.referenceProfileSelect.addEventListener('change', () => {
         activeReferenceProfileId = els.referenceProfileSelect.value;
@@ -737,6 +1011,13 @@ function bindEvents() {
 }
 
 async function init() {
+    for (const [key, options] of [
+        ['novelaiSampler', NOVELAI_SAMPLERS], ['novelaiScheduler', NOVELAI_SCHEDULERS],
+    ]) {
+        for (const value of options) NOVELAI_FIELDS[key].append(new Option(value, value));
+    }
+    for (const size of NOVELAI_SIZES) NOVELAI_FIELDS.novelaiSize.append(new Option(size.label, size.value));
+    loadNovelaiNegativePresets();
     loadProfiles();
     renderProfileOptions();
     putProfileIntoForm(currentProfile());

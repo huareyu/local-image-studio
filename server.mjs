@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fetch, ProxyAgent } from 'undici';
+import { NOVELAI_ENDPOINT, NOVELAI_MODELS, buildNovelaiRequest } from './public/novelai.js';
+import { decodeNovelaiResult } from './lib/novelai-result.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -183,6 +185,7 @@ async function fetchWithTimeout(url, options = {}, incomingRequest = null, profi
             dispatcher: proxyDispatcher(profile),
         });
     } catch (error) {
+        if (error instanceof HttpError) throw error;
         if (controller.signal.aborted) {
             const reason = controller.signal.reason?.message || 'Запрос отменён';
             throw new HttpError(499, reason, `URL: ${safeUrlForLog(url)}`);
@@ -374,12 +377,69 @@ async function generateOpenRouter(body, req) {
     };
 }
 
+function novelaiProfile(profile = {}) {
+    const apiKey = String(profile.apiKey || '').trim().replace(/^Bearer\s+/i, '');
+    if (!apiKey) throw new HttpError(400, 'Вставьте свой Persistent API Token NovelAI в поле API-ключа');
+    return { ...profile, apiKey };
+}
+
+async function generateNovelai(body, req) {
+    const profile = novelaiProfile(body.profile);
+    if (!String(body.prompt || '').trim()) throw new HttpError(400, 'Введите промпт');
+    if (!String(profile.model || '').trim()) throw new HttpError(400, 'В профиле не выбрана модель');
+    const payload = buildNovelaiRequest({ ...body, profile });
+    for (const image of payload.parameters.director_reference_images || []) {
+        if (!image || !/^[A-Za-z0-9+/]+={0,2}$/.test(image)) throw new HttpError(400, 'Некорректный референс NovelAI');
+    }
+    const endpoint = cleanEndpoint(profile.endpoint, NOVELAI_ENDPOINT);
+    const url = appendPath(endpoint, '/ai/generate-image', profile.rawEndpoint);
+    const response = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { ...authHeaders(profile), 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(payload),
+    }, req, profile);
+    if (!response.ok) {
+        const reason = await parseRemoteError(response);
+        const hint = response.status === 401 ? 'Проверьте Persistent API Token'
+            : response.status === 402 ? 'Недостаточно Anlas'
+                : response.status === 429 ? 'Лимит запросов: попробуйте позже' : 'Ошибка генерации NovelAI';
+        throw new HttpError(response.status, `${hint} (HTTP ${response.status})`, reason);
+    }
+    let result;
+    try { result = decodeNovelaiResult(Buffer.from(await response.arrayBuffer())); }
+    catch (error) { throw new HttpError(502, error.message); }
+    return {
+        ...result, provider: 'novelai', model: payload.model,
+        seed: result.seed ?? payload.parameters.seed,
+        width: payload.parameters.width, height: payload.parameters.height,
+        referenceCount: payload.parameters.director_reference_images?.length || 0,
+        negativePrompt: payload.parameters.negative_prompt || '',
+    };
+}
+
+async function handleNovelaiStatus(req, res) {
+    const body = await readJson(req);
+    const profile = novelaiProfile(body.profile);
+    if (profile.rawEndpoint) throw new HttpError(400, 'Для проверки ключа укажите базовый endpoint, а не полный путь генерации');
+    const endpoint = cleanEndpoint(profile.endpoint, NOVELAI_ENDPOINT);
+    const response = await fetchWithTimeout(appendPath(endpoint, '/user/subscription'), {
+        headers: authHeaders(profile),
+    }, req, profile);
+    if (!response.ok) throw new HttpError(response.status, 'Не удалось проверить ключ NovelAI', await parseRemoteError(response));
+    const subscription = await response.json();
+    sendJson(res, 200, {
+        active: subscription.active, tier: subscription.tier,
+        anlas: subscription.trainingStepsLeft,
+    });
+}
+
 async function handleGenerate(req, res) {
     const body = await readJson(req);
     const provider = String(body?.profile?.provider || 'openai');
     let result;
     if (provider === 'gemini') result = await generateGemini(body, req);
     else if (provider === 'openrouter') result = await generateOpenRouter(body, req);
+    else if (provider === 'novelai') result = await generateNovelai(body, req);
     else result = await generateOpenAi(body, req);
     sendJson(res, 200, result);
 }
@@ -387,6 +447,7 @@ async function handleGenerate(req, res) {
 async function handleModels(req, res) {
     const body = await readJson(req);
     const profile = body.profile || {};
+    if (profile.provider === 'novelai') return sendJson(res, 200, { models: NOVELAI_MODELS, catalog: true });
     if (profile.rawEndpoint) throw new HttpError(400, 'Для полного endpoint список моделей недоступен');
     const provider = String(profile.provider || 'openai');
     const endpoint = cleanEndpoint(profile.endpoint,
@@ -436,6 +497,7 @@ const server = http.createServer(async (req, res) => {
     try {
         if (req.method === 'POST' && req.url === '/api/generate') return await handleGenerate(req, res);
         if (req.method === 'POST' && req.url === '/api/models') return await handleModels(req, res);
+        if (req.method === 'POST' && req.url === '/api/novelai/status') return await handleNovelaiStatus(req, res);
         if (req.method === 'GET') return await serveStatic(req, res);
         throw new HttpError(405, 'Method not allowed');
     } catch (error) {
