@@ -2,13 +2,14 @@
 
 一个运行在本机的轻量级 AI 图像生成工作台。它提供连接配置、多参考图管理、提示词编辑和本地生成历史，不依赖 SillyTavern，也不需要安装前端框架。
 
-> 当前版本：`0.3.0`<br>
+> 当前版本：`0.4.0`<br>
 > 界面语言：俄语<br>
 > 运行环境：Node.js 20 或更高版本
 
 ## 功能
 
 - 创建多个独立的连接配置；
+- 一键切换“普通 / NovelAI”模式，两种模式分别记住连接配置、密钥及模型；
 - 每个配置可保存不同的 API 类型、Endpoint、密钥、模型和图像参数；
 - 每个连接配置可单独启用带认证信息的 HTTP/HTTPS 代理；
 - 支持 Gemini-compatible、OpenAI-compatible、OpenRouter 和 NovelAI；
@@ -87,10 +88,14 @@ https://image.novelai.net
 
 ### NovelAI：使用自己的密钥
 
-1. 在连接配置的 API 类型中选择 `NovelAI`；
+1. 点击连接面板顶部的 `NovelAI` 模式按钮；
 2. 使用默认 Endpoint：`https://image.novelai.net`；
 3. 在 NovelAI 的 `User Settings → Account → Get Persistent API Token` 中获取密钥，粘贴到本工具的 API 密钥字段；
 4. 点击“检查密钥”确认连接，然后选择模型并填写提示词。
+
+“普通”和“NovelAI”模式拥有各自的连接配置列表，并分别记住上次使用的配置。第一次进入 NovelAI 会自动创建使用官方 Endpoint 的独立配置，不会复制普通模式的密钥。切换模式会自动保存当前配置；返回时会恢复该模式的 Endpoint、密钥、代理、模型和参数，刷新页面后也会保留选择。原有配置会按 API 类型自动归入对应模式，不会被删除。每种模式至少保留一个连接配置。
+
+默认启用“在此浏览器中保存密钥”。如果主动关闭，密钥仍只保存在当前浏览器会话中；切换模式不会改变这个选择。
 
 模型输入框提供 V5 Full、V5 Full Medium、V5 Curated、V4.5、V4、V3 与 Furry V3 的预设 ID，也允许直接输入自己的模型 ID。`↻` 显示内置图片模型列表；检查密钥请使用单独的按钮。
 

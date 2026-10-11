@@ -9,6 +9,8 @@ const $ = (selector) => document.querySelector(selector);
 const STORAGE_KEYS = {
     profiles: 'image-studio.profiles.v1',
     activeProfile: 'image-studio.active-profile.v1',
+    mode: 'image-studio.mode.v1',
+    activeProfilesByMode: 'image-studio.active-profiles-by-mode.v1',
     secrets: 'image-studio.session-secrets.v1',
     draft: 'image-studio.draft.v1',
     referenceProfiles: 'image-studio.reference-profiles.v1',
@@ -24,6 +26,10 @@ const PROVIDER_DEFAULTS = {
 };
 
 const els = {
+    modeStandard: $('#mode-standard'),
+    modeNovelai: $('#mode-novelai'),
+    modeHint: $('#mode-hint'),
+    apiKeyLabel: $('#api-key-label'),
     profileSelect: $('#profile-select'),
     profileName: $('#profile-name'),
     provider: $('#provider'),
@@ -131,8 +137,22 @@ const defaultProfile = () => ({
     novelaiTagPresets: [],
 });
 
+function profileMode(profile) {
+    return profile.provider === 'novelai' ? 'novelai' : 'standard';
+}
+
+function defaultModeProfile(mode) {
+    const profile = defaultProfile();
+    return mode === 'novelai' ? {
+        ...profile, name: 'NovelAI', provider: 'novelai',
+        endpoint: NOVELAI_ENDPOINT, model: 'nai-diffusion-4-5-full',
+    } : profile;
+}
+
 let profiles = [];
 let activeProfileId = '';
+let activeMode = 'standard';
+let activeProfilesByMode = {};
 let references = [];
 let referenceProfiles = [];
 let activeReferenceProfileId = '';
@@ -169,9 +189,28 @@ function loadProfiles() {
     });
     activeProfileId = localStorage.getItem(STORAGE_KEYS.activeProfile) || profiles[0].id;
     if (!profiles.some(profile => profile.id === activeProfileId)) activeProfileId = profiles[0].id;
+    const legacyProfile = currentProfile();
+    const storedMode = localStorage.getItem(STORAGE_KEYS.mode);
+    activeMode = ['standard', 'novelai'].includes(storedMode) ? storedMode : profileMode(legacyProfile);
+    const storedActiveProfiles = readJson(localStorage, STORAGE_KEYS.activeProfilesByMode, {});
+    activeProfilesByMode = {};
+    for (const mode of ['standard', 'novelai']) {
+        const savedId = storedActiveProfiles?.[mode];
+        let profile = profiles.find(item => item.id === savedId && profileMode(item) === mode)
+            || (profileMode(legacyProfile) === mode ? legacyProfile : null)
+            || profiles.find(item => profileMode(item) === mode);
+        if (!profile) {
+            profile = defaultModeProfile(mode);
+            profiles.push(profile);
+        }
+        activeProfilesByMode[mode] = profile.id;
+    }
+    activeProfileId = activeProfilesByMode[activeMode];
+    persistProfiles();
 }
 
 function persistProfiles() {
+    activeProfilesByMode[activeMode] = activeProfileId;
     const secrets = {};
     const safeProfiles = profiles.map(profile => {
         if (profile.rememberKey === false) {
@@ -185,6 +224,8 @@ function persistProfiles() {
     });
     localStorage.setItem(STORAGE_KEYS.profiles, JSON.stringify(safeProfiles));
     localStorage.setItem(STORAGE_KEYS.activeProfile, activeProfileId);
+    localStorage.setItem(STORAGE_KEYS.mode, activeMode);
+    localStorage.setItem(STORAGE_KEYS.activeProfilesByMode, JSON.stringify(activeProfilesByMode));
     sessionStorage.setItem(STORAGE_KEYS.secrets, JSON.stringify(secrets));
 }
 
@@ -198,11 +239,22 @@ function providerLabel(provider) {
 
 function renderProfileOptions() {
     els.profileSelect.innerHTML = '';
-    for (const profile of profiles) {
+    for (const profile of profiles.filter(item => profileMode(item) === activeMode)) {
         const option = new Option(`${profile.name} · ${providerLabel(profile.provider)}`, profile.id);
         option.selected = profile.id === activeProfileId;
         els.profileSelect.add(option);
     }
+    els.profileDelete.disabled = els.profileSelect.options.length <= 1;
+}
+
+function switchMode(mode) {
+    if (mode === activeMode) return;
+    saveActiveProfile({ notify: false });
+    activeMode = mode;
+    activeProfileId = activeProfilesByMode[mode];
+    persistProfiles();
+    renderProfileOptions();
+    putProfileIntoForm(currentProfile());
 }
 
 function putProfileIntoForm(profile) {
@@ -216,6 +268,8 @@ function putProfileIntoForm(profile) {
     els.proxyUsername.value = profile.proxyUsername || '';
     els.proxyPassword.value = profile.proxyPassword || '';
     els.apiKey.value = profile.apiKey || '';
+    els.apiKey.type = 'password';
+    els.proxyPassword.type = 'password';
     els.rememberKey.checked = profile.rememberKey !== false;
     els.model.value = profile.model || '';
     els.aspectRatio.value = profile.aspectRatio || '';
@@ -271,6 +325,14 @@ function saveActiveProfile({ notify = true } = {}) {
 function syncProviderFields() {
     const provider = els.provider.value;
     const isNovelai = provider === 'novelai';
+    els.modeStandard.setAttribute('aria-pressed', String(!isNovelai));
+    els.modeNovelai.setAttribute('aria-pressed', String(isNovelai));
+    els.modeHint.textContent = isNovelai
+        ? 'Свой ключ, endpoint и модель NovelAI. Обычное подключение не меняется; переключение сохраняет настройки.'
+        : 'Gemini, OpenAI и OpenRouter. Подключение NovelAI хранится отдельно; переключение сохраняет настройки.';
+    els.provider.closest('label').classList.toggle('hidden', isNovelai);
+    $('#profile-details').classList.toggle('two', !isNovelai);
+    els.apiKeyLabel.textContent = isNovelai ? 'Ключ NovelAI · Persistent API Token' : 'API-ключ';
     els.novelaiPanel.classList.toggle('hidden', !isNovelai);
     els.novelaiKeyHint.classList.toggle('hidden', !isNovelai);
     els.negativePrompt.closest('label').classList.toggle('hidden', isNovelai);
@@ -811,11 +873,13 @@ async function loadModelList() {
 }
 
 function bindEvents() {
+    els.modeStandard.addEventListener('click', () => switchMode('standard'));
+    els.modeNovelai.addEventListener('click', () => switchMode('novelai'));
     els.profileSelect.addEventListener('change', () => {
         const selectedId = els.profileSelect.value;
         saveActiveProfile({ notify: false });
         activeProfileId = selectedId;
-        localStorage.setItem(STORAGE_KEYS.activeProfile, activeProfileId);
+        persistProfiles();
         renderProfileOptions();
         putProfileIntoForm(currentProfile());
     });
@@ -832,10 +896,12 @@ function bindEvents() {
         showMessage('Создан новый профиль', 'success');
     });
     els.profileDelete.addEventListener('click', () => {
-        if (profiles.length <= 1) return showMessage('Нельзя удалить единственный профиль');
+        if (profiles.filter(profile => profileMode(profile) === activeMode).length <= 1) {
+            return showMessage('Нельзя удалить единственный профиль этого режима');
+        }
         if (!confirm(`Удалить профиль «${currentProfile().name}»?`)) return;
         profiles = profiles.filter(profile => profile.id !== activeProfileId);
-        activeProfileId = profiles[0].id;
+        activeProfileId = profiles.find(profile => profileMode(profile) === activeMode).id;
         persistProfiles();
         renderProfileOptions();
         putProfileIntoForm(currentProfile());

@@ -57,9 +57,23 @@ async function change(selector, value, event = 'change') {
 
 async function click(selector) { await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); }
 async function ready() {
-    await waitUntil(() => evaluate("document.querySelector('#profile-select')?.options.length === 2 && document.querySelector('#reference-list')?.children.length === 2"), 'UI ready');
+    await waitUntil(() => evaluate("document.querySelector('#profile-select')?.options.length > 0 && document.querySelector('#reference-list')?.children.length === 2"), 'UI ready');
 }
 async function reload() { await cdp('Page.reload'); await ready(); }
+async function connection() {
+    return evaluate(`(() => {
+        const value = id => document.getElementById(id).value;
+        return {
+            profileId: value('profile-select'), provider: value('provider'),
+            endpoint: value('endpoint'), apiKey: value('api-key'), model: value('model'),
+            rawEndpoint: document.getElementById('raw-endpoint').checked,
+            proxyEnabled: document.getElementById('proxy-enabled').checked,
+            proxyUrl: value('proxy-url'), proxyUsername: value('proxy-username'),
+            proxyPassword: value('proxy-password'),
+            rememberKey: document.getElementById('remember-key').checked,
+        };
+    })()`);
+}
 async function layoutCheck() {
     const bad = await evaluate(`(() => {
         const width = window.innerWidth;
@@ -99,6 +113,17 @@ try {
     await cdp('Runtime.enable');
     await cdp('Page.enable');
     await waitUntil(() => evaluate("document.querySelector('#reference-profile-select')?.options.length > 0"), 'first load');
+    assert.equal(await evaluate("document.querySelector('#mode-standard').getAttribute('aria-pressed')"), 'true');
+    await change('#api-key', 'ordinary-first-key');
+    await change('#endpoint', 'http://ordinary.example');
+    const firstOrdinary = await connection();
+    await click('#mode-novelai');
+    assert.equal((await connection()).apiKey, '', 'New NovelAI profile inherited ordinary key');
+    assert.equal((await connection()).endpoint, 'https://image.novelai.net', 'NovelAI endpoint was not automatic');
+    assert.equal((await connection()).provider, 'novelai');
+    assert.equal((await connection()).rememberKey, true, 'NovelAI must remember its own key by default');
+    await click('#mode-standard');
+    assert.deepEqual(await connection(), firstOrdinary, 'Switching modes destroyed the first ordinary connection');
     await evaluate(`(async () => {
         localStorage.setItem('image-studio.profiles.v1', JSON.stringify([
             { id: 'nai', name: 'NovelAI test', provider: 'novelai', endpoint: 'http://127.0.0.1:${MOCK_PORT}', model: 'nai-diffusion-5-full', rememberKey: false, novelaiSteps: 42, novelaiAnlasGuard: false, novelaiNegativePrompt: 'NAI ONLY' },
@@ -106,6 +131,8 @@ try {
         ]));
         sessionStorage.setItem('image-studio.session-secrets.v1', JSON.stringify({ nai: 'test-token' }));
         localStorage.setItem('image-studio.active-profile.v1', 'nai');
+        localStorage.removeItem('image-studio.mode.v1');
+        localStorage.removeItem('image-studio.active-profiles-by-mode.v1');
         localStorage.setItem('image-studio.draft.v1', JSON.stringify({ prompt: '1boy, test', negativePrompt: 'GENERIC ONLY' }));
         localStorage.removeItem('image-studio.reference-profiles.v1');
         const db = await new Promise((resolve, reject) => { const request = indexedDB.open('local-image-studio', 1); request.onsuccess = () => resolve(request.result); request.onerror = reject; });
@@ -121,6 +148,8 @@ try {
         db.close();
     })()`);
     await reload();
+    assert.equal(await evaluate("document.querySelector('#mode-novelai').getAttribute('aria-pressed')"), 'true', 'Legacy active NovelAI profile did not select NovelAI mode');
+    assert.deepEqual(await evaluate("[...document.querySelector('#profile-select').options].map(option => option.value)"), ['nai']);
     assert.equal(await evaluate("document.querySelector('#api-key').value"), 'test-token', 'Legacy session secret not migrated');
     assert.equal(await evaluate("document.querySelector('.references-panel').classList.contains('hidden')"), true);
     assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'NAI ONLY');
@@ -165,25 +194,90 @@ try {
     await reload();
     assert.equal(await evaluate("document.querySelector('#novelai-negative-preset').selectedOptions[0].textContent"), 'My negative');
     assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'MY PRESET');
-    await change('#profile-select', 'gemini');
+    const sessionNovelai = await connection();
+    await click('#mode-standard');
     assert.equal(await evaluate("document.querySelector('#provider').value"), 'gemini', 'Connection profile switch failed');
     assert.equal(await evaluate("document.querySelector('#negative-prompt').value"), 'GENERIC ONLY');
-    await change('#profile-select', 'nai');
-    await click('#profile-save');
+    assert.deepEqual(await evaluate("[...document.querySelector('#profile-select').options].map(option => option.value)"), ['gemini']);
+    await change('#provider', 'openai');
+    await change('#endpoint', 'http://ordinary.example/custom-image-api');
+    await change('#raw-endpoint', true);
+    await change('#api-key', 'ordinary-saved-key');
+    await change('#model', 'ordinary-custom-image-model', 'input');
+    await change('#proxy-enabled', true);
+    await change('#proxy-url', 'http://ordinary-proxy.example:8080');
+    await change('#proxy-username', 'ordinary-user');
+    await change('#proxy-password', 'ordinary-password');
+    const ordinary = await connection();
+    await click('#toggle-key');
+    await click('#mode-novelai');
+    assert.deepEqual(await connection(), sessionNovelai, 'NovelAI credentials/settings were overwritten by ordinary mode');
+    assert.equal(await evaluate("document.querySelector('#api-key').type"), 'password', 'Switching modes exposed the next key');
+    await reload();
+    assert.deepEqual(await connection(), sessionNovelai, 'Session-only NovelAI key lost after reload');
     const stored = await evaluate("JSON.parse(localStorage.getItem('image-studio.profiles.v1')).find(profile => profile.id === 'nai')");
     assert.equal(stored.apiKey, '', 'Session-only token persisted to localStorage');
     assert.equal(stored.novelaiNegativePrompt, 'MY PRESET');
+    await click('#mode-standard');
+    assert.deepEqual(await connection(), ordinary, 'Ordinary connection did not survive switching/reloading');
+    // Each mode remembers its last connection profile, not merely the API type.
+    await click('#profile-new');
+    const ordinaryCopyId = (await connection()).profileId;
+    await change('#api-key', 'ordinary-copy-key');
+    await click('#mode-novelai');
+    assert.equal((await connection()).apiKey, 'test-token');
+    await click('#mode-standard');
+    assert.equal((await connection()).profileId, ordinaryCopyId);
+    assert.equal((await connection()).apiKey, 'ordinary-copy-key');
+    await reload();
+    assert.equal((await connection()).profileId, ordinaryCopyId);
+    await change('#profile-select', 'gemini');
+    assert.deepEqual(await connection(), ordinary);
+    await click('#mode-novelai');
+    await click('#mode-standard');
+    assert.equal((await connection()).profileId, 'gemini', 'Last active profile was not remembered per mode');
+    await change('#profile-select', ordinaryCopyId);
+    await evaluate("window.confirm = () => true");
+    await click('#profile-delete');
+    assert.deepEqual(await connection(), ordinary, 'Deleting an ordinary profile selected a NovelAI profile');
+    assert.equal(await evaluate("document.querySelector('#profile-delete').disabled"), true);
+    // Persist a NovelAI key independently, then simulate a new browser session.
+    await click('#mode-novelai');
+    await change('#remember-key', true);
+    await change('#api-key', 'novelai-saved-key');
+    await change('#proxy-enabled', true);
+    await change('#proxy-url', 'http://novelai-proxy.example:8080');
+    await change('#proxy-username', 'novelai-user');
+    await change('#proxy-password', 'novelai-password');
+    const persistentNovelai = await connection();
+    await click('#mode-standard');
+    assert.deepEqual(await connection(), ordinary);
+    await evaluate('sessionStorage.clear()');
+    await reload();
+    assert.equal(await evaluate("document.querySelector('#mode-standard').getAttribute('aria-pressed')"), 'true');
+    assert.deepEqual(await connection(), ordinary);
+    await click('#mode-novelai');
+    assert.deepEqual(await connection(), persistentNovelai, 'Persistent NovelAI key/settings did not survive a new session');
+    const savedProfiles = await evaluate("JSON.parse(localStorage.getItem('image-studio.profiles.v1'))");
+    assert.equal(savedProfiles.find(profile => profile.id === 'nai').apiKey, 'novelai-saved-key');
+    assert.equal(savedProfiles.find(profile => profile.id === 'gemini').apiKey, 'ordinary-saved-key');
+    await reload();
+    assert.equal(await evaluate("document.querySelector('#mode-novelai').getAttribute('aria-pressed')"), 'true');
+    assert.deepEqual(await connection(), persistentNovelai);
     await layoutCheck();
     for (const width of [390, 430]) {
         await cdp('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: true });
         await layoutCheck();
+        await click('#mode-standard');
+        await layoutCheck();
+        await click('#mode-novelai');
     }
     await change('#proxy-enabled', true);
     await layoutCheck();
     const screenshot = await cdp('Page.captureScreenshot', { captureBeyondViewport: true, format: 'png' });
     await fs.writeFile(path.join(root, 'preview-novelai-mobile.png'), Buffer.from(screenshot.data, 'base64'));
     assert.deepEqual(errors, [], 'Browser JS errors');
-    console.log('Browser checks passed: settings/Medium preservation, personal token storage, ref isolation/normalization/profiles, negative presets, profile switching, mobile layout');
+    console.log('Browser checks passed: independent ordinary/NovelAI modes, automatic saving, credential/proxy isolation, legacy migration, per-mode profiles, settings/Medium preservation, ref isolation/normalization/profiles, negative presets, mobile layout');
 } finally {
     socket?.close();
     for (const request of pending.values()) clearTimeout(request.timeout);

@@ -30,13 +30,19 @@
                     <button id="profile-save" class="icon-button" title="Сохранить профиль" aria-label="Сохранить профиль">✓</button>
                 </div>
 
+                <div class="mode-switch" role="group" aria-label="Режим генерации">
+                    <button id="mode-standard" type="button" aria-pressed="true">Обычный</button>
+                    <button id="mode-novelai" type="button" aria-pressed="false">NovelAI</button>
+                </div>
+                <p id="mode-hint" class="hint mode-hint"></p>
+
                 <div class="profile-picker">
                     <select id="profile-select" aria-label="Профиль подключения"></select>
                     <button id="profile-new" class="secondary-button" type="button">＋ Новый</button>
                     <button id="profile-delete" class="icon-button danger" type="button" title="Удалить профиль" aria-label="Удалить профиль">×</button>
                 </div>
 
-                <div class="form-grid two">
+                <div id="profile-details" class="form-grid two">
                     <label>
                         <span>Название профиля</span>
                         <input id="profile-name" type="text" autocomplete="off">
@@ -47,7 +53,7 @@
                             <option value="gemini">Gemini-compatible</option>
                             <option value="openai">OpenAI-compatible</option>
                             <option value="openrouter">OpenRouter</option>
-                            <option value="novelai">NovelAI</option>
+                            <option value="novelai" hidden disabled>NovelAI</option>
                         </select>
                     </label>
                 </div>
@@ -93,7 +99,7 @@
 
                 <div class="form-grid key-model-grid">
                     <label>
-                        <span>API-ключ</span>
+                        <span id="api-key-label">API-ключ</span>
                         <div class="input-action">
                             <input id="api-key" type="password" spellcheck="false" autocomplete="off">
                             <button id="toggle-key" type="button" title="Показать или скрыть ключ">◉</button>
