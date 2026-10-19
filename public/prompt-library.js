@@ -1,4 +1,5 @@
-import { chunkToken, chunkReferences, expandPromptChunks, findChunkQuery, renameChunkReferences, compilePromptText } from './prompt-tools.js';
+import { chunkToken, expandPromptChunks, findChunkQuery, renameChunkReferences, compilePromptText } from './prompt-tools.js';
+import { createChunkEditor, chunkHue } from './chunk-editor.js';
 
 const STATE_KEY = 'image-studio.prompt-library-state.v1';
 const PAGE_SIZE = 6;
@@ -84,7 +85,7 @@ export function createPromptLibrary({ dbGetAll, dbSave, dbDelete, getMode, prefi
         ui['chunks-tab'].setAttribute('aria-pressed', String(tab === 'chunk'));
         ui.new.textContent = tab === 'chunk' ? '＋ Чанк' : '＋ Стиль';
         ui.help.textContent = tab === 'chunk'
-            ? 'Вставляй чанки кнопкой, перетаскиванием или через @ в полях. Нажми плашку под полем для просмотра, дважды — чтобы развернуть в текст. Имена чувствительны к регистру.'
+            ? 'Вставляй чанки кнопкой, перетаскиванием или через @. Нажми цветную капсулу для просмотра, дважды — чтобы развернуть в текст. Крестик убирает чанк из поля. Имена чувствительны к регистру.'
             : 'Нажми на карточку, чтобы заменить только префикс / стиль. Превью не отправляется модели как референс. Стили NovelAI и Nano Banana хранятся отдельно.';
         const items = visibleRecords();
         const pages = Math.ceil(items.length / PAGE_SIZE);
@@ -109,7 +110,9 @@ export function createPromptLibrary({ dbGetAll, dbSave, dbDelete, getMode, prefi
                 button.draggable = true;
                 button.addEventListener('dragstart', event => { event.dataTransfer.setData('text/plain', chunkToken(item.name)); event.dataTransfer.effectAllowed = 'copy'; });
             }
-            button.append(text('strong', '', item.name), text('span', 'library-card-note', item.category || (tab === 'chunk' ? item.text : item.tags || 'Без категории')));
+            const heading = text('strong', '', item.name);
+            if (tab === 'chunk') { heading.className = 'chunk-library-name'; heading.style.setProperty('--chunk-hue', chunkHue(item.name)); }
+            button.append(heading, text('span', 'library-card-note', item.category || (tab === 'chunk' ? item.text : item.tags || 'Без категории')));
             button.addEventListener('click', () => tab === 'chunk' ? insertChunk(lastField, item.name) : applyStyle(item));
             const edit = text('button', 'library-edit', '✎');
             edit.type = 'button'; edit.title = 'Редактировать'; edit.setAttribute('aria-label', `Редактировать ${item.name}`);
@@ -219,28 +222,12 @@ export function createPromptLibrary({ dbGetAll, dbSave, dbDelete, getMode, prefi
         field.dispatchEvent(new Event('input', { bubbles: true }));
     }
     function refreshBinding(binding, { suggest = false } = {}) {
-        const { field, tools, chips, suggestions, inspection } = binding;
+        const { field, tools, suggestions, inspection } = binding;
         const enabled = kind === 'novelai';
+        binding.editor.sync({ enabled });
         tools.classList.toggle('hidden', !enabled);
         if (!enabled) { suggestions.replaceChildren(); return; }
-        chips.replaceChildren(); inspection.classList.add('hidden');
-        for (const ref of chunkReferences(field.value).slice(0, 24)) {
-            const chip = text('button', 'chunk-chip', `@${ref.name}`);
-            chip.type = 'button'; chip.title = 'Нажать — содержимое; дважды — развернуть в текст';
-            chip.addEventListener('click', () => {
-                inspection.classList.remove('hidden');
-                try { inspection.textContent = expandPromptChunks(ref.token, chunks()); }
-                catch (error) { inspection.textContent = error.message; }
-            });
-            chip.addEventListener('dblclick', () => {
-                if (field.value.slice(ref.index, ref.index + ref.token.length) !== ref.token) return;
-                try {
-                    field.setRangeText(expandPromptChunks(ref.token, chunks()), ref.index, ref.index + ref.token.length, 'end');
-                    field.dispatchEvent(new Event('input', { bubbles: true })); field.focus({ preventScroll: true });
-                } catch (error) { showMessage(error.message); }
-            });
-            chips.append(chip);
-        }
+        inspection.classList.add('hidden');
         suggestions.replaceChildren(); binding.matches = []; binding.query = null; binding.highlight = 0;
         if (!suggest) return;
         const query = findChunkQuery(field.value, field.selectionStart);
@@ -258,17 +245,31 @@ export function createPromptLibrary({ dbGetAll, dbSave, dbDelete, getMode, prefi
     function refreshBindings() { for (const binding of bindings) refreshBinding(binding); }
     function attachField(field) {
         const tools = text('div', 'chunk-field-tools hidden');
-        const chips = text('div', 'chunk-chips');
         const suggestions = text('div', 'chunk-suggestions'); suggestions.setAttribute('role', 'listbox'); suggestions.setAttribute('aria-label', 'Сохранённые чанки');
         const inspection = text('div', 'chunk-inspection hidden');
-        tools.append(suggestions, chips, inspection);
+        tools.append(suggestions, inspection);
         field.closest('label').after(tools);
-        const binding = { field, tools, chips, suggestions, inspection, matches: [], highlight: 0 };
+        const editor = createChunkEditor(field, {
+            isKnown: name => chunks().some(item => item.name === name),
+            inspect: ref => {
+                inspection.classList.remove('hidden');
+                try { inspection.textContent = expandPromptChunks(ref.token, chunks()); }
+                catch (error) { inspection.textContent = error.message; }
+            },
+            expand: ref => {
+                if (field.value.slice(ref.index, ref.index + ref.token.length) !== ref.token) return;
+                try {
+                    field.setRangeText(expandPromptChunks(ref.token, chunks()), ref.index, ref.index + ref.token.length, 'end');
+                    field.dispatchEvent(new Event('input', { bubbles: true })); field.focus({ preventScroll: true });
+                } catch (error) { showMessage(error.message); }
+            },
+        });
+        const binding = { field, tools, suggestions, inspection, editor, matches: [], highlight: 0 };
         bindings.push(binding);
         field.addEventListener('focus', () => { if (![ui.text, ui.negative].includes(field)) lastField = field; refreshBinding(binding, { suggest: true }); });
-        field.addEventListener('input', () => {
+        field.addEventListener('input', event => {
             if (field === prefixField) { rememberPrefix({ dirty: true }); render(); }
-            refreshBinding(binding, { suggest: true });
+            refreshBinding(binding, { suggest: !event.isComposing });
         });
         field.addEventListener('click', () => refreshBinding(binding, { suggest: true }));
         field.addEventListener('blur', () => { setTimeout(() => suggestions.replaceChildren(), 180); });

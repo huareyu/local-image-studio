@@ -59,6 +59,10 @@ async function change(selector, value, event = 'change') {
 }
 
 async function click(selector) { await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); }
+async function press(key, code, virtualKey, modifiers = 0) {
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: virtualKey, modifiers, ...(key === 'Enter' ? { text: '\r' } : {}) });
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: virtualKey, modifiers });
+}
 async function libraryId(name) {
     return evaluate(`[...document.querySelectorAll('.library-card')].find(card => card.querySelector('strong').textContent === ${JSON.stringify(name)})?.dataset.id`);
 }
@@ -102,7 +106,7 @@ async function connection() {
 async function layoutCheck() {
     const bad = await evaluate(`(() => {
         const width = window.innerWidth;
-        return [...document.querySelectorAll('main, .panel, .section-heading, input, select, textarea, button')]
+        return [...document.querySelectorAll('main, .panel, .section-heading, input, select, textarea, button, .chunk-rich-editor, .chunk-capsule')]
             .filter(node => node.getClientRects().length && !node.closest('template'))
             .filter(node => { const box = node.getBoundingClientRect(); return box.right > width + 1 || box.left < -1; })
             .map(node => node.id || node.className || node.tagName);
@@ -473,9 +477,9 @@ try {
     assert.equal(await evaluate("document.querySelector('#prompt').closest('label').nextElementSibling.querySelectorAll('.chunk-suggestion').length"), 1);
     await evaluate("document.querySelector('#prompt').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))");
     assert.equal(await evaluate("document.querySelector('#prompt').value"), '!macro:Artist!, ');
-    await evaluate("document.querySelector('#prompt').closest('label').nextElementSibling.querySelector('.chunk-chip').click()");
+    await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt] .chunk-capsule').click()");
     assert.ok((await evaluate("document.querySelector('#prompt').closest('label').nextElementSibling.querySelector('.chunk-inspection').textContent")).includes('pale colors'));
-    await evaluate("document.querySelector('#prompt').closest('label').nextElementSibling.querySelector('.chunk-chip').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))");
+    await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt] .chunk-capsule').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))");
     assert.ok(!(await evaluate("document.querySelector('#prompt').value")).includes('!macro:'));
     await click('#library-chunks-tab');
     const dragged = await evaluate(`(() => {
@@ -552,8 +556,91 @@ try {
     })()`);
     const libraryScreenshot = await cdp('Page.captureScreenshot', { captureBeyondViewport: true, format: 'png', clip: libraryClip });
     await fs.writeFile(path.join(root, 'preview-prompt-library-mobile.png'), Buffer.from(libraryScreenshot.data, 'base64'));
+
+    // Real keyboard input in the visual capsule editor, not just textarea assignments.
+    await saveLibraryRecord('chunk', 'Итан', '1boy, wavy blond hair,');
+    await change('#prompt', '', 'input');
+    await evaluate("document.querySelector('#prompt').focus(); document.querySelector('#prompt').setSelectionRange(0, 0)");
+    await cdp('Input.insertText', { text: 'A😀 ' });
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'A😀 ', 'Typing moved the caret backwards or lost Unicode');
+    await cdp('Input.insertText', { text: '@Ит' });
+    await press('Enter', 'Enter', 13);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'A😀 !macro:Итан!, ', 'Autocomplete did not insert a capsule at the caret');
+    assert.equal(await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt] .chunk-capsule-name').textContent"), 'Итан');
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('#prompt')).display"), 'none', 'Raw macro textarea is still visible');
+    assert.ok(!(await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt]').textContent")).includes('!macro:'));
+    await cdp('Input.insertText', { text: 'walking' });
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'A😀 !macro:Итан!, walking', 'Text inserted after a capsule at the wrong position');
+    const copied = await evaluate(`(() => {
+        const field = document.querySelector('#prompt'); const start = field.value.indexOf('!macro:');
+        field.setSelectionRange(start, start + '!macro:Итан!'.length);
+        const data = new DataTransfer();
+        document.querySelector('.chunk-rich-editor[data-field=prompt]').dispatchEvent(new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: data }));
+        return data.getData('text/plain');
+    })()`);
+    assert.equal(copied, '!macro:Итан!', 'Copying a capsule lost its canonical reference');
+    await evaluate(`(() => {
+        const data = new DataTransfer();
+        document.querySelector('.chunk-rich-editor[data-field=prompt]').dispatchEvent(new ClipboardEvent('cut', { bubbles: true, cancelable: true, clipboardData: data }));
+    })()`);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'A😀 , walking');
+    await press('z', 'KeyZ', 90, 2);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'A😀 !macro:Итан!, walking', 'Undo did not restore the capsule');
+    await press('Z', 'KeyZ', 90, 10);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'A😀 , walking', 'Redo did not repeat capsule removal');
+    await press('z', 'KeyZ', 90, 2);
+    await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt] .chunk-capsule-remove').click()");
+    assert.equal(await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt]').querySelectorAll('.chunk-capsule').length"), 0);
+    await change('#prompt', '!macro:Итан!', 'input');
+    await evaluate("const field = document.querySelector('#prompt'); field.focus(); field.setSelectionRange(field.value.length, field.value.length)");
+    await press('Backspace', 'Backspace', 8);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '', 'Backspace partially deleted a capsule');
+    await press('z', 'KeyZ', 90, 2);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '!macro:Итан!');
+    await evaluate("document.querySelector('#prompt').setSelectionRange(0, 0)");
+    await press('Delete', 'Delete', 46);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '', 'Forward delete partially deleted a capsule');
+    await evaluate(`(() => {
+        const data = new DataTransfer(); data.setData('text/plain', '!macro:Итан!, <b>literal</b>');
+        data.setData('text/html', '<img src=x onerror="window.capsuleXss=true">');
+        document.querySelector('.chunk-rich-editor[data-field=prompt]').dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+    })()`);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '!macro:Итан!, <b>literal</b>');
+    assert.equal(await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt]').querySelectorAll('img,b').length"), 0, 'HTML from the clipboard entered the editor DOM');
+    assert.equal(await evaluate('Boolean(window.capsuleXss)'), false);
+    await change('#prompt', '', 'input');
+    await evaluate("document.querySelector('#prompt').focus(); document.querySelector('#prompt').setSelectionRange(0, 0)");
+    await cdp('Input.imeSetComposition', { text: 'Ит', selectionStart: 2, selectionEnd: 2 });
+    await cdp('Input.insertText', { text: 'Итан' });
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'Итан', 'IME composition duplicated or lost text');
+    await press('Enter', 'Enter', 13);
+    await cdp('Input.insertText', { text: 'next line' });
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'Итан\nnext line', 'Enter did not preserve a single newline');
+    await change('#prompt', `${'long prompt line\n'.repeat(60)}!macro:Итан!`, 'input');
+    await evaluate("(() => { const field = document.querySelector('#prompt'); field.focus(); field.setSelectionRange(field.value.length, field.value.length) })()");
+    await cdp('Input.insertText', { text: ' tail' });
+    assert.equal(await evaluate("document.querySelector('#prompt').value.endsWith('!macro:Итан! tail')"), true);
+    assert.equal(await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt]').scrollTop > 0"), true, 'Caret did not scroll into view in a long prompt');
+    await change('#prompt', '!macro:Итан!, !macro:Artist New!, !macro:Look!', 'input');
+    const hues = await evaluate("[...document.querySelectorAll('.chunk-rich-editor[data-field=prompt] .chunk-capsule')].map(node => node.style.getPropertyValue('--chunk-hue'))");
+    assert.ok(new Set(hues).size > 1, 'All capsules have the same color');
+    for (const width of [390, 430]) {
+        await cdp('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: true });
+        await layoutCheck();
+    }
+    await waitUntil(() => evaluate("JSON.parse(localStorage.getItem('image-studio.draft.v1')).prompt === document.querySelector('#prompt').value"), 'capsule draft saved');
+    await reload();
+    await waitUntil(() => evaluate("document.querySelectorAll('.chunk-rich-editor[data-field=prompt] .chunk-capsule').length === 3"), 'capsules restored after reload');
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('.chunk-rich-editor[data-field=prompt] .chunk-capsule')].map(node => node.style.getPropertyValue('--chunk-hue'))"), hues);
+    await evaluate("window.scrollTo(0, window.scrollY + document.querySelector('.prompt-panel').getBoundingClientRect().top - 90)");
+    const capsuleClip = await evaluate(`(() => {
+        const box = document.querySelector('.prompt-panel').getBoundingClientRect();
+        return { x: box.left + window.scrollX, y: box.top + window.scrollY, width: box.width, height: box.height, scale: 1 };
+    })()`);
+    const capsuleScreenshot = await cdp('Page.captureScreenshot', { captureBeyondViewport: true, format: 'png', clip: capsuleClip });
+    await fs.writeFile(path.join(root, 'preview-chunk-capsules-mobile.png'), Buffer.from(capsuleScreenshot.data, 'base64'));
     assert.deepEqual(errors, [], 'Browser JS errors');
-    console.log('Browser checks passed: styles/previews/mode isolation, chunk autocomplete/expansion/renaming/drag data, no API calls for invalid chunks, v1 database migration, folder button/legacy archive, paged deletion, file/ref preservation, profiles, Medium settings, negative presets, mobile layout');
+    console.log('Browser checks passed: inline colored capsules, real keyboard/caret/Unicode/IME, copy/cut/plain paste, atomic deletion, undo/redo, reload, styles/previews/mode isolation, chunk autocomplete/expansion/renaming, no API calls for invalid chunks, database migration, history, profiles, mobile layout');
 } finally {
     socket?.close();
     for (const request of pending.values()) clearTimeout(request.timeout);
