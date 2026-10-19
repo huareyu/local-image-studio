@@ -208,6 +208,55 @@
                 <div id="reference-list" class="reference-list"></div>
             </section>
 
+            <section id="prompt-library-panel" class="panel library-panel">
+                <div class="section-heading">
+                    <div><span id="library-context" class="eyebrow">Локальная библиотека</span><h2>Стили и чанки</h2></div>
+                    <button id="library-new" class="secondary-button" type="button">＋ Стиль</button>
+                </div>
+                <div class="library-tabs" role="group" aria-label="Раздел библиотеки">
+                    <button id="library-styles-tab" type="button" aria-pressed="true">Стили</button>
+                    <button id="library-chunks-tab" type="button" aria-pressed="false">Чанки NovelAI</button>
+                </div>
+                <div class="library-filters">
+                    <input id="library-search" type="search" placeholder="Поиск стилей и чанков…" aria-label="Поиск в библиотеке">
+                    <select id="library-category" aria-label="Категория"><option value="">Все категории</option></select>
+                </div>
+                <div id="library-grid" class="library-grid"></div>
+                <div class="library-pagination">
+                    <button id="library-previous" class="icon-button" type="button" aria-label="Предыдущая страница библиотеки">‹</button>
+                    <span id="library-page"></span>
+                    <button id="library-next" class="icon-button" type="button" aria-label="Следующая страница библиотеки">›</button>
+                </div>
+                <p id="library-help" class="hint"></p>
+                <div id="library-editor" class="library-editor hidden">
+                    <h3 id="library-editor-title">Новый стиль</h3>
+                    <label><span>Название <small>до 80 символов</small></span><input id="library-name" type="text" maxlength="80" autocomplete="off"></label>
+                    <div class="form-grid two">
+                        <label><span>Категория</span><input id="library-folder" type="text" list="library-categories" placeholder="Художники, свет, персонажи…"></label>
+                        <label><span>Теги для поиска</span><input id="library-tags" type="text" placeholder="аниме, пастель…"></label>
+                    </div>
+                    <datalist id="library-categories"></datalist>
+                    <label><span>Текст стиля / чанка</span><textarea id="library-text" rows="5" placeholder="Теги или описание стиля. Для вложенного чанка: !macro:Имя!"></textarea></label>
+                    <div id="library-negative-box">
+                        <label class="check-row"><input id="library-use-negative" type="checkbox"><span>Сохранять и применять негатив вместе со стилем</span></label>
+                        <label><textarea id="library-negative" class="hidden" rows="3" aria-label="Негатив стиля"></textarea></label>
+                    </div>
+                    <div id="library-preview-box" class="library-preview-box">
+                        <img id="library-preview" class="hidden" alt="Превью стиля">
+                        <div class="library-preview-actions">
+                            <label class="upload-button"><input id="library-preview-upload" type="file" accept="image/*" hidden>＋ Загрузить превью</label>
+                            <button id="library-preview-result" class="secondary-button" type="button">Из текущей картинки</button>
+                            <button id="library-preview-clear" class="text-button" type="button">Убрать превью</button>
+                        </div>
+                    </div>
+                    <div class="library-editor-actions">
+                        <button id="library-save" class="secondary-button" type="button">Сохранить</button>
+                        <button id="library-cancel" class="secondary-button" type="button">Отмена</button>
+                        <button id="library-delete" class="text-button danger-text hidden" type="button">Удалить</button>
+                    </div>
+                </div>
+            </section>
+
             <section class="panel prompt-panel">
                 <div class="section-heading">
                     <div>

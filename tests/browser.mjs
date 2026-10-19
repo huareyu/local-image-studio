@@ -59,6 +59,28 @@ async function change(selector, value, event = 'change') {
 }
 
 async function click(selector) { await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); }
+async function libraryId(name) {
+    return evaluate(`[...document.querySelectorAll('.library-card')].find(card => card.querySelector('strong').textContent === ${JSON.stringify(name)})?.dataset.id`);
+}
+async function saveLibraryRecord(type, name, content, { negative, preview = false } = {}) {
+    await click(type === 'chunk' ? '#library-chunks-tab' : '#library-styles-tab');
+    await click('#library-new');
+    await change('#library-name', name);
+    await change('#library-text', content, 'input');
+    await change('#library-folder', type === 'chunk' ? 'Building blocks' : 'Art styles');
+    await change('#library-tags', 'test, мягкий свет');
+    if (negative !== undefined) {
+        await change('#library-use-negative', true);
+        await change('#library-negative', negative, 'input');
+    }
+    if (preview) {
+        await click('#library-preview-result');
+        await waitUntil(() => evaluate("!document.querySelector('#library-save').disabled && document.querySelector('#library-preview').src.startsWith('data:image/')"), 'style preview');
+    }
+    await click('#library-save');
+    await waitUntil(() => evaluate("document.querySelector('#library-editor').classList.contains('hidden')"), 'save library record');
+    return libraryId(name);
+}
 async function ready() {
     await waitUntil(() => evaluate("document.querySelector('#profile-select')?.options.length > 0 && document.querySelector('#reference-list')?.children.length === 2"), 'UI ready');
 }
@@ -147,7 +169,18 @@ try {
         localStorage.removeItem('image-studio.active-profiles-by-mode.v1');
         localStorage.setItem('image-studio.draft.v1', JSON.stringify({ prompt: '1boy, test', negativePrompt: 'GENERIC ONLY' }));
         localStorage.removeItem('image-studio.reference-profiles.v1');
-        const db = await new Promise((resolve, reject) => { const request = indexedDB.open('local-image-studio', 1); request.onsuccess = () => resolve(request.result); request.onerror = reject; });
+        // Explicitly seed the old schema to check that upgrading preserves user data.
+        await new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase('local-image-studio'); request.onsuccess = resolve; request.onerror = reject; });
+        const db = await new Promise((resolve, reject) => {
+            const request = indexedDB.open('local-image-studio', 1);
+            request.onupgradeneeded = () => { request.result.createObjectStore('references', { keyPath: 'id' }); request.result.createObjectStore('history', { keyPath: 'id' }); };
+            request.onsuccess = () => resolve(request.result); request.onerror = reject;
+        });
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction('history', 'readwrite');
+            tx.objectStore('history').put({ id: 'migration-sentinel', prompt: 'Old history survives upgrade', createdAt: 1, dataUrl: document.createElement('canvas').toDataURL() });
+            tx.oncomplete = resolve; tx.onabort = reject;
+        });
         await new Promise((resolve, reject) => {
             const tx = db.transaction('references', 'readwrite');
             for (const [id, color] of [['ref-a', '#f00'], ['ref-b', '#00f']]) {
@@ -160,6 +193,16 @@ try {
         db.close();
     })()`);
     await reload();
+    assert.deepEqual(await evaluate(`(async () => {
+        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 2); request.onsuccess = () => resolve(request.result); });
+        const result = { version: db.version, hasLibrary: db.objectStoreNames.contains('promptLibrary') }; db.close(); return result;
+    })()`), { version: 2, hasLibrary: true }, 'Library schema migration failed');
+    assert.equal(await evaluate(`(async () => {
+        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 2); request.onsuccess = () => resolve(request.result); });
+        const value = await new Promise(resolve => { const request = db.transaction('history').objectStore('history').get('migration-sentinel'); request.onsuccess = () => resolve(request.result); });
+        await new Promise(resolve => { const tx = db.transaction('history', 'readwrite'); tx.objectStore('history').delete('migration-sentinel'); tx.oncomplete = resolve; });
+        db.close(); return value.prompt;
+    })()`), 'Old history survives upgrade');
     assert.equal(await evaluate("document.querySelector('#mode-novelai').getAttribute('aria-pressed')"), 'true', 'Legacy active NovelAI profile did not select NovelAI mode');
     assert.deepEqual(await evaluate("[...document.querySelector('#profile-select').options].map(option => option.value)"), ['nai']);
     assert.equal(await evaluate("document.querySelector('#api-key').value"), 'test-token', 'Legacy session secret not migrated');
@@ -192,7 +235,7 @@ try {
     }
     await waitUntil(() => evaluate("document.querySelector('#history-list').children.length === 2"), 'generated history');
     const generatedEntries = await evaluate(`(async () => {
-        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 1); request.onsuccess = () => resolve(request.result); });
+        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 2); request.onsuccess = () => resolve(request.result); });
         const entries = await new Promise(resolve => { const request = db.transaction('history').objectStore('history').getAll(); request.onsuccess = () => resolve(request.result); });
         db.close(); return entries;
     })()`);
@@ -214,7 +257,7 @@ try {
     await fs.access(path.join(imagesDir, generatedEntries.find(entry => entry.id === deletedId).archive.fileName));
     // Legacy history on later pages is visible, selectable and copied to the folder.
     await evaluate(`(async () => {
-        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 1); request.onsuccess = () => resolve(request.result); });
+        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 2); request.onsuccess = () => resolve(request.result); });
         await new Promise((resolve, reject) => {
             const tx = db.transaction('history', 'readwrite');
             for (let i = 0; i < 27; i++) tx.objectStore('history').put({
@@ -252,7 +295,7 @@ try {
     await click('#history-delete-selected');
     await waitUntil(() => evaluate("document.querySelector('#history-page-label').textContent.includes('26 изображений') && !document.querySelector('#history-select').disabled"), 'cross-page selective deletion');
     const remainingIds = await evaluate(`(async () => {
-        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 1); request.onsuccess = () => resolve(request.result); });
+        const db = await new Promise(resolve => { const request = indexedDB.open('local-image-studio', 2); request.onsuccess = () => resolve(request.result); });
         const ids = await new Promise(resolve => { const request = db.transaction('history').objectStore('history').getAllKeys(); request.onsuccess = () => resolve(request.result); });
         db.close(); return ids;
     })()`);
@@ -389,8 +432,128 @@ try {
     assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 0);
     assert.equal((await fs.readdir(imagesDir)).length, 29, 'Clear history deleted archived images');
     assert.equal(await evaluate("document.querySelector('#reference-list').children.length"), 2);
+
+    // Styles, local previews and NovelAI-compatible prompt chunks.
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await change('#proxy-enabled', false);
+    await change('#endpoint', `http://127.0.0.1:${MOCK_PORT}`);
+    await change('#raw-endpoint', false);
+    await change('#api-key', 'test-token');
+    await change('#model', 'nai-diffusion-4-5-full', 'input');
+    await change('#prefix', 'initial NAI style', 'input');
+    await change('#prompt', 'A quiet portrait scene', 'input');
+    await change('#novelai-enable-references', false);
+    await click('#generate');
+    await waitUntil(() => evaluate("!document.querySelector('#generate').disabled && !document.querySelector('#result-image').classList.contains('hidden')"), 'result for style preview');
+    const artistId = await saveLibraryRecord('chunk', 'Artist', '{{artist:kamochiru}}, pale colors,');
+    await saveLibraryRecord('chunk', 'Look', '!macro:Artist!, 1boy,');
+    await saveLibraryRecord('chunk', 'Cycle', '!macro:Cycle!');
+    const styleId = await saveLibraryRecord('style', 'Soft Painter', '!macro:Look!, masterpiece,', { negative: 'text, watermark,', preview: true });
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'A quiet portrait scene', 'Applying a style overwrote the scene');
+    assert.equal(await evaluate("document.querySelector('#prefix').value"), '!macro:Look!, masterpiece,');
+    assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'text, watermark,');
+    assert.equal(await evaluate(`document.querySelector('.library-card[data-id="${styleId}"] img').src.startsWith('data:image/')`), true);
+    await change('#novelai-enable-references', true);
+    const selectedRefs = await evaluate("document.querySelectorAll('.reference-card.enabled').length");
+    await click('#generate');
+    await waitUntil(() => evaluate("!document.querySelector('#generate').disabled && document.querySelector('#message').textContent.includes('готово')"), 'generation using chunk style');
+    const chunkRequests = await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response => response.json());
+    const chunkRequest = chunkRequests.at(-1);
+    assert.ok(chunkRequest.input.includes('{{artist:kamochiru}}, pale colors, 1boy, masterpiece,'));
+    assert.ok(!chunkRequest.input.includes('!macro:') && !chunkRequest.input.includes('Soft Painter'));
+    assert.equal(chunkRequest.parameters.negative_prompt, 'text, watermark,');
+    assert.equal(chunkRequest.parameters.director_reference_images.length, selectedRefs, 'A style preview leaked as a reference');
+    for (const [source, errorText] of [['!macro:Missing!', 'не найден'], ['!macro:Cycle!', 'Циклический']]) {
+        await change('#prompt', source, 'input');
+        await click('#generate');
+        await waitUntil(() => evaluate(`!document.querySelector('#generate').disabled && document.querySelector('#message').textContent.includes(${JSON.stringify(errorText)})`), 'chunk error before generation');
+    }
+    assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response => response.json())).length, chunkRequests.length, 'Invalid chunks made a paid API request');
+    await change('#prompt', '@Ar', 'input');
+    assert.equal(await evaluate("document.querySelector('#prompt').closest('label').nextElementSibling.querySelectorAll('.chunk-suggestion').length"), 1);
+    await evaluate("document.querySelector('#prompt').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))");
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '!macro:Artist!, ');
+    await evaluate("document.querySelector('#prompt').closest('label').nextElementSibling.querySelector('.chunk-chip').click()");
+    assert.ok((await evaluate("document.querySelector('#prompt').closest('label').nextElementSibling.querySelector('.chunk-inspection').textContent")).includes('pale colors'));
+    await evaluate("document.querySelector('#prompt').closest('label').nextElementSibling.querySelector('.chunk-chip').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))");
+    assert.ok(!(await evaluate("document.querySelector('#prompt').value")).includes('!macro:'));
+    await click('#library-chunks-tab');
+    const dragged = await evaluate(`(() => {
+        const dataTransfer = new DataTransfer();
+        document.querySelector('.library-card[data-id="${artistId}"] .library-apply').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer }));
+        return dataTransfer.getData('text/plain');
+    })()`);
+    assert.equal(dragged, '!macro:Artist!');
+    await change('#prefix', '!macro:Artist!', 'input');
+    await click(`.library-card[data-id="${artistId}"] .library-edit`);
+    await change('#library-name', 'Artist New');
+    await click('#library-save');
+    await waitUntil(() => evaluate("document.querySelector('#library-editor').classList.contains('hidden')"), 'chunk rename');
+    assert.equal(await evaluate("document.querySelector('#prefix').value"), '!macro:Artist New!');
+    await reload();
+    assert.equal(await evaluate("document.querySelector('#prefix').value"), '!macro:Artist New!', 'Chunk rename/draft lost after reload');
+    await click('#library-chunks-tab');
+    const lookId = await libraryId('Look');
+    await click(`.library-card[data-id="${lookId}"] .library-edit`);
+    assert.equal(await evaluate("document.querySelector('#library-text').value"), '!macro:Artist New!, 1boy,', 'Nested chunk references were not renamed');
+    await click('#library-cancel');
+    await click('#library-new');
+    await change('#library-name', 'Artist New');
+    await change('#library-text', 'duplicate');
+    await click('#library-save');
+    assert.equal(await evaluate("document.querySelector('#library-editor').classList.contains('hidden')"), false);
+    assert.ok((await evaluate("document.querySelector('#message').textContent")).includes('уже существует'));
+    await click('#library-cancel');
+    await click('#library-styles-tab');
+    await click(`.library-card[data-id="${styleId}"] .library-edit`);
+    assert.equal(await evaluate("document.querySelector('#library-preview').src.startsWith('data:image/')"), true, 'Preview lost after reload');
+    await evaluate(`(async () => {
+        const canvas = document.createElement('canvas'); canvas.width = 600; canvas.height = 900;
+        const ctx = canvas.getContext('2d'); ctx.fillStyle = '#c7a4ee'; ctx.fillRect(0, 0, 600, 900);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const transfer = new DataTransfer(); transfer.items.add(new File([blob], 'style-preview.png', { type: 'image/png' }));
+        const field = document.querySelector('#library-preview-upload'); field.files = transfer.files; field.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitUntil(() => evaluate("!document.querySelector('#library-save').disabled && document.querySelector('#library-preview').naturalHeight === 384"), 'uploaded resized preview');
+    await click('#library-save');
+    await waitUntil(() => evaluate("document.querySelector('#library-editor').classList.contains('hidden')"), 'update style preview');
+    const naiPrefix = await evaluate("document.querySelector('#prefix').value");
+    const scene = await evaluate("document.querySelector('#prompt').value");
+    await click('#mode-standard');
+    assert.equal(await evaluate("document.querySelectorAll('.library-card').length"), 0, 'NovelAI styles leaked into NB library');
+    assert.ok(!(await evaluate("document.querySelector('#prefix').value")).includes('!macro:'));
+    const nbId = await saveLibraryRecord('style', 'NB Cinema', 'cinematic warm lighting, textured paint');
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), scene);
+    await reload();
+    assert.equal(await evaluate("document.querySelector('#prefix').value"), 'cinematic warm lighting, textured paint');
+    assert.equal(await evaluate("document.querySelector('#library-chunks-tab').classList.contains('hidden')"), true);
+    await click('#mode-novelai');
+    assert.equal(await evaluate("document.querySelector('#prefix').value"), naiPrefix, 'NB style overwrote the NovelAI style');
+    assert.ok(await libraryId('Soft Painter'));
+    assert.equal(await libraryId('NB Cinema'), undefined);
+    await click('#mode-standard');
+    await click(`.library-card[data-id="${nbId}"] .library-edit`);
+    await evaluate('window.confirm = () => true');
+    await click('#library-delete');
+    await waitUntil(() => evaluate("document.querySelectorAll('.library-card').length === 0"), 'delete NB style');
+    assert.equal(await evaluate("document.querySelector('#prefix').value"), 'cinematic warm lighting, textured paint', 'Deleting a preset deleted the current text');
+    await click('#mode-novelai');
+    for (const width of [390, 430]) {
+        await cdp('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: true });
+        await layoutCheck();
+        await click(`.library-card[data-id="${styleId}"] .library-edit`);
+        await change('#library-text', '@Ar', 'input');
+        await layoutCheck();
+        await click('#library-cancel');
+    }
+    const libraryClip = await evaluate(`(() => {
+        const box = document.querySelector('#prompt-library-panel').getBoundingClientRect();
+        return { x: box.left + window.scrollX, y: box.top + window.scrollY, width: box.width, height: box.height, scale: 1 };
+    })()`);
+    const libraryScreenshot = await cdp('Page.captureScreenshot', { captureBeyondViewport: true, format: 'png', clip: libraryClip });
+    await fs.writeFile(path.join(root, 'preview-prompt-library-mobile.png'), Buffer.from(libraryScreenshot.data, 'base64'));
     assert.deepEqual(errors, [], 'Browser JS errors');
-    console.log('Browser checks passed: folder button/legacy archive, paged and cross-page selective deletion, confirmation/cancellation, file/ref preservation, independent ordinary/NovelAI modes, automatic saving, credential/proxy isolation, legacy migration, per-mode profiles, settings/Medium preservation, ref isolation/normalization/profiles, negative presets, mobile layout');
+    console.log('Browser checks passed: styles/previews/mode isolation, chunk autocomplete/expansion/renaming/drag data, no API calls for invalid chunks, v1 database migration, folder button/legacy archive, paged deletion, file/ref preservation, profiles, Medium settings, negative presets, mobile layout');
 } finally {
     socket?.close();
     for (const request of pending.values()) clearTimeout(request.timeout);

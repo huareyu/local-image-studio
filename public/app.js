@@ -3,6 +3,7 @@ import {
     NOVELAI_DEFAULTS, DEFAULT_NOVELAI_NEGATIVE, novelaiCapabilities,
     novelaiReferencesEnabled, novelaiDimensions, normalizeNovelaiReference,
 } from './novelai.js';
+import { createPromptLibrary } from './prompt-library.js';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -180,6 +181,25 @@ let historyPage = 0;
 let historySelectionMode = false;
 let historyBusy = false;
 const selectedHistoryIds = new Set();
+const promptLibrary = createPromptLibrary({
+    dbGetAll: () => dbGetAll('promptLibrary'),
+    dbSave: records => savePromptLibrary(records),
+    dbDelete: id => dbDelete('promptLibrary', id),
+    getMode: () => els.provider.value,
+    prefixField: els.prefix, promptField: els.prompt, negativeField: NOVELAI_FIELDS.novelaiNegativePrompt,
+    getNegative: () => els.provider.value === 'novelai' ? NOVELAI_FIELDS.novelaiNegativePrompt.value : els.negativePrompt.value,
+    setNegative: value => {
+        if (els.provider.value === 'novelai') {
+            NOVELAI_FIELDS.novelaiNegativePrompt.value = value;
+            novelaiValues.novelaiNegativePrompt = value;
+            novelaiValues.novelaiNegativePresetId = '';
+            renderNovelaiNegativePresets();
+        } else els.negativePrompt.value = value;
+    },
+    getResult: () => currentResult,
+    onTextChanged: () => saveDraftSoon(),
+    showMessage,
+});
 
 function readJson(storage, key, fallback) {
     try {
@@ -361,6 +381,7 @@ function syncProviderFields() {
     els.imageSize.closest('label')?.classList.toggle('hidden', provider !== 'gemini' && provider !== 'openrouter');
     els.aspectRatio.closest('label')?.classList.toggle('hidden', provider === 'openai');
     els.openaiSize.closest('label')?.classList.toggle('hidden', provider !== 'openai');
+    promptLibrary.syncMode();
 }
 
 function captureNovelaiValues() {
@@ -488,11 +509,12 @@ function clearMessage() {
 
 function openDb() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('local-image-studio', 1);
+        const request = indexedDB.open('local-image-studio', 2);
         request.onupgradeneeded = () => {
             const db = request.result;
             if (!db.objectStoreNames.contains('references')) db.createObjectStore('references', { keyPath: 'id' });
             if (!db.objectStoreNames.contains('history')) db.createObjectStore('history', { keyPath: 'id' });
+            if (!db.objectStoreNames.contains('promptLibrary')) db.createObjectStore('promptLibrary', { keyPath: 'id' });
         };
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
@@ -517,6 +539,16 @@ const dbGetAll = store => dbRequest(store, 'readonly', objectStore => objectStor
 const dbGet = (store, key) => dbRequest(store, 'readonly', objectStore => objectStore.get(key));
 const dbPut = (store, value) => dbRequest(store, 'readwrite', objectStore => objectStore.put(value));
 const dbDelete = (store, key) => dbRequest(store, 'readwrite', objectStore => objectStore.delete(key));
+
+async function savePromptLibrary(records) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction('promptLibrary', 'readwrite');
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onabort = () => { db.close(); reject(tx.error || new Error('Не удалось сохранить библиотеку')); };
+        for (const record of records) tx.objectStore('promptLibrary').put(record);
+    });
+}
 
 async function historyTransaction(operation) {
     const db = await openDb();
@@ -792,6 +824,9 @@ async function generate() {
     const prefix = els.prefix.value.trim();
     const negativePrompt = profile.provider === 'novelai' ? profile.novelaiNegativePrompt : els.negativePrompt.value.trim();
     try {
+        const compiled = promptLibrary.compile({ prompt, prefix, negativePrompt, novelai: profile.provider === 'novelai',
+            supportsNegative: profile.provider !== 'novelai' || novelaiCapabilities(profile.model).negativePrompt });
+        const requestProfile = profile.provider === 'novelai' ? { ...profile, novelaiNegativePrompt: compiled.negativePrompt } : profile;
         if (profile.provider === 'novelai') {
             activeRefs = await Promise.all(activeRefs.slice(0, 5).map(async reference => ({
                 ...reference, dataUrl: await normalizeNovelaiReference(reference.dataUrl),
@@ -803,10 +838,10 @@ async function generate() {
             headers: { 'Content-Type': 'application/json' },
             signal: controller.signal,
             body: JSON.stringify({
-                profile,
-                prompt,
-                prefix,
-                negativePrompt,
+                profile: requestProfile,
+                prompt: compiled.prompt,
+                prefix: compiled.prefix,
+                negativePrompt: compiled.negativePrompt,
                 references: activeRefs,
                 aspectRatio: profile.aspectRatio,
                 imageSize: profile.imageSize,
@@ -825,6 +860,9 @@ async function generate() {
             prompt,
             prefix,
             negativePrompt: result.negativePrompt ?? negativePrompt,
+            resolvedPrompt: compiled.prompt,
+            resolvedPrefix: compiled.prefix,
+            sourceNegativePrompt: negativePrompt,
             createdAt: result.createdAt || Date.now(),
             archive: result.archive,
             referenceCount: result.referenceCount ?? activeRefs.length,
@@ -895,13 +933,14 @@ async function activateHistoryEntry(id) {
         const entry = await dbGet('history', id);
         if (!entry) return await renderHistory();
         displayResult(entry);
-        els.prompt.value = entry.prompt || '';
-        els.prefix.value = entry.prefix || '';
+        els.prompt.value = entry.resolvedPrompt ?? entry.prompt ?? '';
+        els.prefix.value = entry.resolvedPrefix ?? entry.prefix ?? '';
         if (els.provider.value === 'novelai') {
             NOVELAI_FIELDS.novelaiNegativePrompt.value = entry.negativePrompt || '';
             novelaiValues.novelaiNegativePrompt = entry.negativePrompt || '';
         } else els.negativePrompt.value = entry.negativePrompt || '';
         saveDraftSoon();
+        promptLibrary.textChanged();
         window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (error) { showMessage(error.message || String(error)); }
 }
@@ -1298,7 +1337,7 @@ async function init() {
     loadDraft();
     bindEvents();
     try {
-        await Promise.all([loadReferences(), renderHistory()]);
+        await Promise.all([loadReferences(), renderHistory(), promptLibrary.init()]);
     } catch (error) {
         showMessage(`Не удалось открыть локальную базу: ${error.message}`);
     }
