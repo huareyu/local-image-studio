@@ -16,10 +16,10 @@
                 <p>локальная генерация с референсами</p>
             </div>
         </div>
-        <div class="topbar-actions"><nav class="workspace-nav" aria-label="Разделы"><a href="#prompt-panel">Создать</a><a href="#history-gallery">Галерея</a></nav><div class="server-pill"><span></span> работает локально</div></div>
+        <div class="topbar-actions"><nav class="workspace-nav" aria-label="Разделы"><a id="nav-studio" href="#prompt-panel">Создать</a><a id="nav-gallery" href="#history-gallery">Галерея</a><button id="nav-artists" type="button" aria-pressed="false" aria-controls="artist-page">Художники</button></nav><div class="server-pill"><span></span> работает локально</div></div>
     </header>
 
-    <main class="workspace">
+    <main id="studio-workspace" class="workspace">
         <aside class="controls">
             <section class="panel profile-panel">
                 <div class="section-heading">
@@ -431,6 +431,51 @@
                 </div>
             </section>
         </section>
+    </main>
+
+    <main id="artist-page" class="artist-page hidden">
+        <header class="artist-intro">
+            <span class="eyebrow">Kaloscope · подбор стиля</span>
+            <h1>Найти похожих художников</h1>
+            <p>Загрузи арт — классификатор предложит художников с похожим стилем. Это подсказка для промпта, а не доказательство настоящего авторства.</p>
+        </header>
+        <div class="artist-layout">
+            <section class="panel artist-input-panel" aria-label="Картинка для классификации">
+                <div class="section-heading"><h2>Исходный арт</h2><button id="artist-clear" class="text-button" type="button">Очистить</button></div>
+                <input id="artist-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+                <button id="artist-drop" class="artist-drop" type="button" aria-label="Загрузить картинку для поиска художника">
+                    <img id="artist-preview" class="hidden" alt="Локальное превью картинки для анализа">
+                    <span id="artist-empty"><strong>＋ Добавить картинку</strong><small>Нажми, перетащи файл или вставь из буфера · PNG / JPEG / WebP</small></span>
+                </button>
+                <p id="artist-caption" class="hint"></p>
+                <button id="artist-current" class="secondary-button" type="button" disabled>Взять картинку с холста</button>
+                <label><span>Модель Kaloscope</span><select id="artist-model"></select></label>
+                <label><span>Количество художников <output id="artist-top-k-value">5</output></span><input id="artist-top-k" type="range" min="1" max="25" step="1" value="5"></label>
+                <p class="hint">Порог совпадения фиксирован: 0. По умолчанию — Kaloscope v2.0 ONNX, как в примере. V3.0 — предварительная версия.</p>
+                <label class="check-row"><input id="artist-proxy" type="checkbox"><span>Использовать прокси активного подключения</span></label>
+                <div class="artist-privacy">
+                    <label class="check-row"><input id="artist-consent" type="checkbox"><span>Разрешаю отправить эту картинку в Kaloscope / Hugging Face для анализа</span></label>
+                    <p class="hint">До нажатия кнопки анализа картинка остаётся в браузере. Отправляется уменьшенная JPEG-копия до 1024px без исходных метаданных и имени файла. Ключи генерации, промпты и остальные картинки не передаются. Сервис может сохранять загрузку по своим правилам.</p>
+                </div>
+                <div class="artist-run-actions"><button id="artist-run" class="secondary-button artist-run" type="button" disabled>✦ Найти похожих художников</button><button id="artist-cancel" class="text-button danger-text hidden" type="button">Прервать ожидание</button></div>
+                <p id="artist-status" class="artist-status" role="status" aria-live="polite">Выбери картинку для анализа.</p>
+                <p class="hint">Обработка выполняется онлайн, на чужом Space: возможны очередь, сон сервиса и ограничения запросов. Прерывание останавливает ожидание, но не гарантирует отмену удалённой задачи или удаления загрузки.</p>
+            </section>
+            <section class="panel artist-results-panel" aria-label="Результаты подбора художников">
+                <div class="section-heading"><h2>Похожие художники</h2><a class="text-button" href="https://huggingface.co/spaces/DraconicDragon/Kaloscope-artist-style-classifier" target="_blank" rel="noopener noreferrer">Открыть Kaloscope ↗</a></div>
+                <div id="artist-empty-results" class="artist-empty-results"><span>✧</span><h3>Здесь появятся результаты</h3><p>Нажатие на имя откроет работы на Danbooru. Там может быть контент 18+.</p></div>
+                <div id="artist-result-box" class="hidden">
+                    <p class="hint">Проценты — оценка модели, а не вероятность настоящего авторства. Для неизвестного художника или смеси стилей это только ориентир.</p>
+                    <ol id="artist-results" class="artist-results"></ol>
+                    <div class="artist-selection-bar"><span id="artist-selection">Выбрано: 0</span><button id="artist-select-all" class="text-button" type="button">Выбрать всех</button><button id="artist-select-none" class="text-button" type="button">Снять выбор</button></div>
+                    <label><span>Формат тегов для выбранных</span><select id="artist-format"><option value="novelai">NovelAI · artist:имя</option><option value="plain">Обычные теги · имя</option></select></label>
+                    <label><span>Теги художников</span><textarea id="artist-tags" rows="3" readonly spellcheck="false"></textarea></label>
+                    <div class="artist-run-actions"><button id="artist-copy" class="secondary-button" type="button" disabled>Скопировать теги</button><button id="artist-use" class="secondary-button" type="button" disabled>＋ В префикс / стиль</button></div>
+                    <p class="hint">В студии теги дописываются к текущему префиксу — сцена, негатив и выбранные референсы не меняются. Вес можно настроить отдельно. Изображение и результаты этой вкладки не сохраняются в историю.</p>
+                </div>
+                <p class="hint artist-credit">Интеграция с <a href="https://huggingface.co/spaces/DraconicDragon/Kaloscope-artist-style-classifier" target="_blank" rel="noopener noreferrer">Kaloscope Space · DraconicDragon</a>; оригинальные модели — <a href="https://huggingface.co/heathcliff01" target="_blank" rel="noopener noreferrer">heathcliff01</a>. Модели не скачиваются на твой компьютер.</p>
+            </section>
+        </div>
     </main>
 
     <dialog id="image-viewer" class="image-viewer" aria-labelledby="viewer-title">

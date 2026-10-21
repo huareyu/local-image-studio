@@ -1,8 +1,11 @@
 import http from 'node:http';
 
 const PORT = Number(process.env.MOCK_PORT || 3213);
-const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Xq7vWQAAAABJRU5ErkJggg==';
+// Valid CRCs are required by createImageBitmap/Pillow, unlike some tolerant <img> decoders.
+const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==';
 const novelaiRequests = [];
+const artistRequests = [];
+const artistJobs = new Map();
 
 async function readBody(req) {
     const chunks = [];
@@ -18,6 +21,28 @@ function json(res, value) {
 http.createServer(async (req, res) => {
     const body = await readBody(req);
     if (req.url === '/__novelai-requests') return json(res, novelaiRequests);
+    if (req.url === '/__artist-requests') return json(res, artistRequests);
+    if (req.url === '/gradio_api/upload') {
+        artistRequests.push({ type: 'upload', authorization: req.headers.authorization || '', body: body.toString('latin1') });
+        return json(res, ['/tmp/gradio/mock/reference.jpg']);
+    }
+    if (req.url === '/gradio_api/call/predict') {
+        const payload = JSON.parse(body.toString());
+        artistRequests.push({ type: 'predict', authorization: req.headers.authorization || '', payload });
+        const id = `artist-job-${artistJobs.size}`; artistJobs.set(id, payload);
+        return json(res, { event_id: id });
+    }
+    if (req.url.startsWith('/gradio_api/call/predict/')) {
+        const job = artistJobs.get(req.url.split('/').at(-1));
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write('event: heartbeat\ndata: null\n\n');
+        const data = ['', { headers: ['Rank', 'Artist', '', 'Score'], data: [] }, JSON.stringify({ kamochiru: .42, to_e: .19, '<img src=x onerror=alert(1)>': .99 }), ''];
+        setTimeout(() => {
+            if (res.destroyed) return;
+            res.end(job?.data?.[2] === 7 ? 'event: error\ndata: "mock service unavailable"\n\n' : `event: complete\ndata: ${JSON.stringify(data)}\n\n`);
+        }, job?.data?.[2] === 8 ? 1500 : 70);
+        return;
+    }
     if (req.url === '/user/subscription') {
         if (req.headers.authorization !== 'Bearer test-token') {
             res.writeHead(401, { 'Content-Type': 'application/json' });

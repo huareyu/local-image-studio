@@ -2,7 +2,7 @@
 
 一个运行在本机的轻量级 AI 图像生成工作台。它提供连接配置、多参考图管理、提示词编辑和本地生成历史，不依赖 SillyTavern，也不需要安装前端框架。
 
-> 当前版本：`0.8.1`<br>
+> 当前版本：`0.9.0`<br>
 > 界面语言：俄语<br>
 > 运行环境：Node.js 20 或更高版本
 
@@ -29,6 +29,7 @@
 - 分开管理 NovelAI / Nano Banana 的风格库，保存预览图、分类、搜索标签及可选负面提示词；
 - 支持 NovelAI Prompt Chunks：`@` 自动补全、拖放、嵌套引用及生成前展开；
 - NovelAI 本地标签助手：内置 140,782 条 Danbooru 标签及别名、后台搜索、俄文入门说明、分类、自定义词典导入、排序与权重按钮；
+- 独立“画师”分页：接入 Kaloscope 图片画风分类，选择 1–25 个结果、查看 Danbooru 链接、复制标签或追加到风格前缀；
 - 针对桌面和手机屏幕设计的响应式界面；
 - 启动脚本会自动安装用于代理连接的轻量依赖。
 
@@ -188,6 +189,24 @@ NovelAI 模式的提示词面板中新增“提示词助手”。输入英文标
 
 Danbooru CSV 来自 [DominikDoom/a1111-sd-webui-tagcomplete](https://github.com/DominikDoom/a1111-sd-webui-tagcomplete/blob/209b1dd76b69e95ba6b1619ea5d13e68446607b7/tags/danbooru.csv) 的固定提交 `209b1dd`（词表文件提交日期：2025-01-03），按原始字节附带，作者及 MIT 授权声明保存在 [DANBOORU-LICENSE.txt](public/data/DANBOORU-LICENSE.txt)。来源、SHA-256、Git Blob SHA 和条目数保存在 `public/data/danbooru.meta.json`。`npm run data:danbooru` 可重新下载并验证这一固定版本，不会自动追踪或信任远程最新版。
 
+## Kaloscope：寻找相似画风
+
+顶部的“画师”分页连接 [DraconicDragon 的 Kaloscope Space](https://huggingface.co/spaces/DraconicDragon/Kaloscope-artist-style-classifier)。可以上传 PNG / JPEG / WebP、拖放文件、粘贴剪贴板图片，或使用当前画布结果。图片先在浏览器中转成最长边不超过 1024px 的 JPEG，移除原始文件名及元数据，透明部分使用白色背景；原图最多 30 MB。
+
+默认模型为 `Kaloscope v2.0 ONNX`，也可以选用 Space 当前提供的其他版本，包括 `v3.0 Preview`。结果数量为 1–25，阈值固定为 0，不提供误触滑块。模型输出是画风相似性的分类分数，**不是对真实作者身份的证明**；未知画师或混合画风只能作参考，低分结果也不应当当作确定结论。
+
+默认只选择第一项，可勾选更多结果、点击名称查看 Danbooru、复制单个名字或复制整组标签。Danbooru 可能包含成人内容。标签支持 `artist:name` 和普通名字两种格式。“加入前缀 / 风格”仅追加到现有前缀，不替换场景、负面提示词或参考图，也不自动调用图片生成。画风权重可之后在提示词助手中调整。
+
+### 外部服务与隐私
+
+准备预览和切换分页不会上传图片。每次换图后必须重新勾选同意，再点击分析按钮，才会通过本机 Node 服务把 JPEG 副本传到 Kaloscope / Hugging Face。生成服务的 API 密钥、提示词、其余参考图和原始本地文件名不会发送给该 Space；不需要填写 Hugging Face Token。
+
+图片、勾选同意和分类结果不存入浏览器历史或本地归档；刷新即清空。外部 Space 可能按其规则保留已上传内容，本应用无法保证远程删除。服务可能休眠、排队、限流或加载模型；“中断等待”只停止本地等待，不保证取消远程任务或删除上传。等待最多三分钟，不自动重试分析，以免重复提交。
+
+可勾选使用“当前连接配置的代理”。只读取该配置中的代理地址及认证，不会把图片生成 API 的密钥转发给 Space。未配置代理时会提示，不会悄悄改为直连。默认固定使用官方 Space，不从网页接收任意远程文件 URL；高级用户如部署了自己的兼容副本，可在启动 Node 服务前设置 `IMAGE_STUDIO_KALOSCOPE_ENDPOINT`。
+
+集成依据 Space 的公开 [API 源码](https://huggingface.co/spaces/DraconicDragon/Kaloscope-artist-style-classifier/blob/main/app.py) 和 Gradio 上传 / 队列接口独立实现，不下载或打包模型权重。感谢 DraconicDragon 的 Space、heathcliff01 的原始 Kaloscope 模型及其贡献者。
+
 ## 图片文件夹与历史管理
 
 新的生成结果会自动以原始图片格式保存到项目目录下的 `generated-images/`，不再需要逐张点击下载。文件名包含生成时间及唯一 ID；不会覆盖已有图片。此目录已加入 `.gitignore`，私人图片不会提交到 GitHub。
@@ -214,6 +233,7 @@ Danbooru CSV 来自 [DominikDoom/a1111-sd-webui-tagcomplete](https://github.com/
 - 风格、预览图和 Chunks 同样保存在浏览器 IndexedDB，不写入源码或 Git；
 - 图片文件另存到本机的 `generated-images/`，与浏览器记录分开保留；
 - API 密钥只会从浏览器发送到本机 Node.js 服务，再由本机服务发送到所配置的 Endpoint；
+- Kaloscope 分页是明确同意后才上传的外部画风分类服务，不属于离线识别；
 - 项目不会把密钥写入源码、日志或 Git 仓库；
 - 请仅使用你信任的 Endpoint。
 
@@ -239,11 +259,14 @@ image-studio/
 │  ├─ tag-catalog.js    # Danbooru、入门说明及自定义词典合并
 │  ├─ tag-search-client.js # 有上限缓存的 Worker 通信
 │  ├─ tag-search-worker.js # 后台加载、导入、索引及查询
+│  ├─ artist-classifier.js # 独立画师分页、上传确认及标签使用
+│  ├─ artist-tools.js    # Kaloscope 模型列表、画师标签及安全链接
 │  ├─ data/             # Danbooru CSV、来源元数据及 MIT 声明
 │  └─ novelai.js       # 前后端共用的 NovelAI 参数规则
 ├─ lib/
 │  ├─ novelai-result.mjs # JSON / ZIP 图片响应解析
-│  └─ image-archive.mjs  # 原始图片归档及打开本机文件夹
+│  ├─ image-archive.mjs  # 原始图片归档及打开本机文件夹
+│  └─ artist-classifier.mjs # Kaloscope 上传、Gradio 队列及结果解析
 ├─ generated-images/   # 私人生成图片（已被 Git 忽略）
 ├─ tests/
 │  ├─ mock-provider.mjs
@@ -254,15 +277,19 @@ image-studio/
 │  ├─ history-tools.test.mjs
 │  ├─ tag-tools.test.mjs
 │  ├─ tag-catalog.test.mjs
+│  ├─ artist-classifier.test.mjs
 │  ├─ browser.mjs
 │  └─ smoke.mjs
 ├─ server.mjs          # 静态服务器与 API 代理
 ├─ scripts/update-danbooru.mjs # 校验并下载固定版本词库
+├─ scripts/check-kaloscope.mjs # 显式联网检查（只创建并上传人工渐变测试图）
 ├─ start-local.bat     # Windows 快速启动
 └─ package.json
 ```
 
 ## 测试
+
+`npm test` 与浏览器测试仅使用本地模拟服务，不会上传私人图片或调用真实付费生成。若要显式检查 Kaloscope 公共 Space，可运行 `node scripts/check-kaloscope.mjs`；它会自行生成并上传一张 128×128 的渐变测试图，不读取本机图片或密钥。
 
 无需真实 API 密钥即可运行本地 smoke test：
 

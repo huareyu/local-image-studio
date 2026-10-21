@@ -123,7 +123,7 @@ async function layoutCheck() {
 }
 
 try {
-    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir });
+    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir, IMAGE_STUDIO_KALOSCOPE_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}` });
     launch('tests/mock-provider.mjs', { MOCK_PORT: String(MOCK_PORT) });
     await waitUntil(() => fetch(origin).then(response => response.ok), 'local app');
     const browser = process.env.IMAGE_STUDIO_BROWSER || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
@@ -853,8 +853,85 @@ try {
     const tagScreenshot = await cdp('Page.captureScreenshot', {captureBeyondViewport:true, format:'png',clip:tagClip});
     await fs.writeFile(path.join(root, 'preview-tag-assistant-mobile.png'), Buffer.from(tagScreenshot.data,'base64'));
     assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response=>response.json())).length, beforeTagRequests, 'Local tag help made a generation request');
+
+    // Kaloscope is a separate, opt-in tab. Local preparation/paste must not upload or add references.
+    await click('#nav-artists');
+    assert.equal(await evaluate("document.querySelector('#studio-workspace').classList.contains('hidden')"), true);
+    assert.equal(await evaluate("document.querySelector('#artist-page').classList.contains('hidden')"), false);
+    await evaluate(`(async () => {
+        const data=new DataTransfer(); const canvas=document.createElement('canvas'); canvas.width=64; canvas.height=64;
+        canvas.getContext('2d').fillRect(0,0,64,64); const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+        data.items.add(new File([blob],'clipboard.png',{type:'image/png'}));
+        window.dispatchEvent(new ClipboardEvent('paste',{cancelable:true,clipboardData:data}));
+    })()`);
+    await waitUntil(() => evaluate("document.querySelector('#artist-preview').src.startsWith('data:image/jpeg')"), 'local artist clipboard preview');
+    assert.equal(await evaluate("document.querySelectorAll('.reference-card').length"), 2, 'Pasting in classifier added a generation reference');
+    assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__artist-requests`).then(response=>response.json())).length, 0, 'Preview automatically uploaded image');
+    await click('#nav-gallery');
+    await click('.history-preview');
+    await waitUntil(() => evaluate("!document.querySelector('#viewer-use-prompt').disabled"), 'source from gallery');
+    await click('#viewer-use-prompt');
+    await click('#nav-artists');
+    assert.equal(await evaluate("document.querySelector('#artist-current').disabled"), false);
+    await click('#artist-current');
+    await waitUntil(() => evaluate("document.querySelector('#artist-caption').textContent.startsWith('Картинка с холста')"), 'classify current canvas');
+    await evaluate(`(() => {
+        const canvas=document.createElement('canvas'); canvas.width=1800; canvas.height=1200;
+        const ctx=canvas.getContext('2d'); const gradient=ctx.createLinearGradient(0,0,1800,1200); gradient.addColorStop(0,'#6b58a3'); gradient.addColorStop(1,'#dbb0b8'); ctx.fillStyle=gradient; ctx.fillRect(0,0,1800,1200);
+        ctx.fillStyle='#f4e6dc'; ctx.fillRect(500,250,800,700); ctx.fillStyle='#735a75'; ctx.font='60px sans-serif'; ctx.fillText('Local test image',660,600);
+        const bytes=Uint8Array.from(atob(canvas.toDataURL().split(',')[1]),c=>c.charCodeAt(0)); const data=new DataTransfer();
+        data.items.add(new File([bytes],'PRIVATE_ART_NAME.png',{type:'image/png'})); const input=document.querySelector('#artist-upload'); input.files=data.files; input.dispatchEvent(new Event('change',{bubbles:true}));
+    })()`);
+    await waitUntil(() => evaluate("document.querySelector('#artist-caption').textContent.includes('1024×683')"), 'metadata-free scaled classifier image');
+    assert.equal(await evaluate("document.querySelector('#artist-run').disabled"), true, 'Artist upload did not require consent');
+    await click('#artist-run');
+    assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__artist-requests`).then(response=>response.json())).length, 0);
+    await change('#artist-consent', true);
+    await press('Enter', 'Enter', 13, 2);
+    assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response=>response.json())).length, beforeTagRequests, 'Classifier shortcut generated an image');
+    await click('#artist-run');
+    await waitUntil(() => evaluate("document.querySelectorAll('.artist-result-row').length === 2 && !document.querySelector('#artist-run').disabled"), 'Kaloscope artist results');
+    assert.equal(await evaluate("document.querySelector('.artist-result-name').textContent"), 'kamochiru');
+    assert.equal(await evaluate("document.querySelector('.artist-result-name').href"), 'https://danbooru.donmai.us/posts?tags=kamochiru');
+    assert.equal(await evaluate("document.querySelector('#artist-results img, #artist-results script') !== null"), false, 'Classifier rendered remote HTML');
+    assert.equal(await evaluate("document.querySelector('#artist-tags').value"), 'artist:kamochiru');
+    const classifierRequests = await fetch(`http://127.0.0.1:${MOCK_PORT}/__artist-requests`).then(response=>response.json());
+    assert.equal(classifierRequests.some(request=>request.authorization), false);
+    assert.equal(JSON.stringify(classifierRequests).includes('PRIVATE_ART_NAME'), false, 'Original filename sent to HF');
+    assert.deepEqual(classifierRequests.find(request=>request.type==='predict').payload.data.slice(1), ['Kaloscope v2.0 ONNX',5,0]);
+    await click('#artist-select-all');
+    await change('#artist-format', 'plain');
+    assert.equal(await evaluate("document.querySelector('#artist-tags').value"), 'kamochiru, to_e');
+    await change('#artist-format', 'novelai');
+    const beforeStyleTransfer = await evaluate("({prefix:document.querySelector('#prefix').value,prompt:document.querySelector('#prompt').value,negative:document.querySelector('#novelai-negative').value,refs:document.querySelectorAll('.reference-card.enabled').length})");
+    await click('#artist-use');
+    assert.equal(await evaluate("document.querySelector('#artist-page').classList.contains('hidden')"), true);
+    const afterStyleTransfer = await evaluate("({prefix:document.querySelector('#prefix').value,prompt:document.querySelector('#prompt').value,negative:document.querySelector('#novelai-negative').value,refs:document.querySelectorAll('.reference-card.enabled').length})");
+    assert.ok(afterStyleTransfer.prefix.startsWith(beforeStyleTransfer.prefix));
+    assert.ok(afterStyleTransfer.prefix.endsWith('artist:kamochiru, artist:to_e, '));
+    assert.equal(afterStyleTransfer.prompt,beforeStyleTransfer.prompt); assert.equal(afterStyleTransfer.negative,beforeStyleTransfer.negative); assert.equal(afterStyleTransfer.refs,beforeStyleTransfer.refs);
+    await click('#nav-artists');
+    await change('#artist-top-k',7,'input'); await click('#artist-run');
+    await waitUntil(() => evaluate("document.querySelector('#artist-status').dataset.kind === 'error' && !document.querySelector('#artist-run').disabled"), 'artist service failure');
+    await change('#artist-top-k',8,'input'); await click('#artist-run');
+    await waitUntil(() => evaluate("!document.querySelector('#artist-cancel').classList.contains('hidden')"), 'artist pending request');
+    await click('#artist-cancel');
+    await waitUntil(() => evaluate("document.querySelector('#artist-status').textContent.includes('Ожидание остановлено') && !document.querySelector('#artist-run').disabled"), 'stop artist wait');
+    await change('#artist-top-k',5,'input'); await click('#artist-run');
+    await waitUntil(() => evaluate("document.querySelectorAll('.artist-result-row').length === 2 && !document.querySelector('#artist-run').disabled"), 'artist retry');
+    for (const width of [390,430]) {
+        await cdp('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:true}); await layoutCheck();
+    }
+    const artistClip = await evaluate("(() => {const b=document.querySelector('#artist-page').getBoundingClientRect(); return {x:b.left+scrollX,y:b.top+scrollY,width:b.width,height:b.height,scale:1}})()");
+    const artistScreenshot = await cdp('Page.captureScreenshot',{captureBeyondViewport:true,format:'png',clip:artistClip});
+    await fs.writeFile(path.join(root,'preview-artist-classifier-mobile.png'),Buffer.from(artistScreenshot.data,'base64'));
+    await reload();
+    assert.equal(await evaluate("document.querySelector('#artist-consent').checked"), false, 'Classifier persisted consent');
+    assert.equal(await evaluate("document.querySelector('#artist-preview').hasAttribute('src')"), false, 'Classifier persisted uploaded art');
+    assert.equal(await evaluate("document.querySelector('#artist-run').disabled"), true);
+    await click('#nav-studio');
     assert.deepEqual(errors, [], 'Browser JS errors');
-    console.log('Browser checks passed: large 140k+ Danbooru worker catalog/aliases/categories/pagination/stale-query protection, local NovelAI tag suggestions/imports/Russian search/weights/reordering/undo/isolation, no generation calls for tag help, gallery search/provider/date/sort/page shortcuts, filtered full-screen browsing, real keyboard and phone swipes, rapid navigation, current-image download, small thumbnails, explicit prompt reuse, inline colored capsules, real keyboard/caret/Unicode/IME, copy/cut/plain paste, atomic deletion, undo/redo, reload, styles/previews/mode isolation, chunk autocomplete/expansion/renaming, no API calls for invalid chunks, database migration, history, profiles, mobile layout');
+    console.log('Browser checks passed: Kaloscope tab/upload/paste/canvas/consent/privacy/artist links/style transfer/errors/cancel/mobile, large 140k+ Danbooru worker catalog/aliases/categories/pagination/stale-query protection, local NovelAI tag suggestions/imports/Russian search/weights/reordering/undo/isolation, no generation calls for tag help, gallery search/provider/date/sort/page shortcuts, filtered full-screen browsing, real keyboard and phone swipes, rapid navigation, current-image download, small thumbnails, explicit prompt reuse, inline colored capsules, real keyboard/caret/Unicode/IME, copy/cut/plain paste, atomic deletion, undo/redo, reload, styles/previews/mode isolation, chunk autocomplete/expansion/renaming, no API calls for invalid chunks, database migration, history, profiles, mobile layout');
 } finally {
     socket?.close();
     for (const request of pending.values()) clearTimeout(request.timeout);

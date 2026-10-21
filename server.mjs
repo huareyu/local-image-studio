@@ -7,6 +7,7 @@ import { fetch, ProxyAgent } from 'undici';
 import { NOVELAI_ENDPOINT, NOVELAI_MODELS, buildNovelaiRequest } from './public/novelai.js';
 import { decodeNovelaiResult } from './lib/novelai-result.mjs';
 import { createImageArchive } from './lib/image-archive.mjs';
+import { classifyArtistImage } from './lib/artist-classifier.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -47,12 +48,12 @@ function sendJson(res, status, payload) {
     res.end(body);
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = MAX_BODY_BYTES) {
     const chunks = [];
     let size = 0;
     for await (const chunk of req) {
         size += chunk.length;
-        if (size > MAX_BODY_BYTES) throw new HttpError(413, 'Запрос слишком большой');
+        if (size > maxBytes) throw new HttpError(413, 'Запрос слишком большой');
         chunks.push(chunk);
     }
     try {
@@ -476,6 +477,29 @@ async function handleArchiveImage(req, res) {
     catch (error) { throw new HttpError(400, error.message); }
 }
 
+async function handleArtistClassification(req, res) {
+    requireLocalImageAction(req);
+    const body = await readJson(req, 12 * 1024 * 1024);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Нужен объект с параметрами анализа');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('Kaloscope timeout')), 180000);
+    const closed = () => { if (!res.writableEnded) controller.abort(new Error('Client disconnected')); };
+    res.once('close', closed);
+    try {
+        const proxy = body.proxy || {};
+        const result = await classifyArtistImage(body, { signal: controller.signal,
+            endpoint: process.env.IMAGE_STUDIO_KALOSCOPE_ENDPOINT || undefined,
+            dispatcher: proxyDispatcher({ proxyEnabled: proxy.proxyEnabled === true, proxyUrl: proxy.proxyUrl,
+                proxyUsername: proxy.proxyUsername, proxyPassword: proxy.proxyPassword }) });
+        if (!res.destroyed) sendJson(res, 200, result);
+    } catch (error) {
+        if (res.destroyed) return;
+        if (controller.signal.aborted) throw new HttpError(504, 'Не дождались ответа Kaloscope. Space может загружать модель или стоять в очереди.');
+        if (error.status) throw error;
+        throw new HttpError(502, 'Не удалось подключиться к Kaloscope. Проверь интернет, VPN или прокси.');
+    } finally { clearTimeout(timeout); res.off('close', closed); }
+}
+
 async function handleOpenImageFolder(req, res) {
     requireLocalImageAction(req);
     try { sendJson(res, 200, await imageArchive.open()); }
@@ -538,6 +562,7 @@ const server = http.createServer(async (req, res) => {
         if (req.method === 'POST' && req.url === '/api/novelai/status') return await handleNovelaiStatus(req, res);
         if (req.method === 'POST' && req.url === '/api/images/archive') return await handleArchiveImage(req, res);
         if (req.method === 'POST' && req.url === '/api/images/open-folder') return await handleOpenImageFolder(req, res);
+        if (req.method === 'POST' && req.url === '/api/artists/classify') return await handleArtistClassification(req, res);
         if (req.method === 'GET') return await serveStatic(req, res);
         throw new HttpError(405, 'Method not allowed');
     } catch (error) {

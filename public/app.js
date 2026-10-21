@@ -8,6 +8,7 @@ import { filterHistory, pageNumbers } from './history-tools.js';
 import { createImageViewer } from './image-viewer.js';
 import { createThumbnailLoader } from './image-thumbnails.js';
 import { createTagAssistant } from './tag-assistant.js';
+import { createArtistClassifier } from './artist-classifier.js';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -230,6 +231,21 @@ const tagAssistant = createTagAssistant({
     loadDictionary: () => dbGet('promptLibrary', 'novelai-tag-dictionary'),
     saveDictionary: tags => dbPut('promptLibrary', { id: 'novelai-tag-dictionary', type: 'tagDictionary', tags }),
     showMessage,
+});
+const artistClassifier = createArtistClassifier({
+    getResult: () => currentResult,
+    getMode: () => els.provider.value,
+    getProxy: () => ({ proxyEnabled: els.proxyEnabled.checked, proxyUrl: els.proxyUrl.value,
+        proxyUsername: els.proxyUsername.value, proxyPassword: els.proxyPassword.value }),
+    useTags: tags => {
+        const source = els.prefix.value;
+        const separator = !source.trim() ? '' : /[,\n]\s*$/.test(source) ? (/\s$/.test(source) ? '' : ' ') : ', ';
+        els.prefix.setRangeText(separator + tags + ', ', source.length, source.length, 'end');
+        els.prefix.dispatchEvent(new Event('input', { bubbles: true }));
+        els.prefix.closest('.panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        els.prefix.focus({ preventScroll: true });
+        showMessage('Выбранные художники добавлены в префикс / стиль', 'success');
+    },
 });
 
 function readJson(storage, key, fallback) {
@@ -814,6 +830,7 @@ function displayResult(entry) {
     els.resultMeta.textContent = [entry.width && entry.height ? `${entry.width}×${entry.height}` : '', entry.seed == null ? '' : `Seed: ${entry.seed}`].filter(Boolean).join(' · ');
     els.resultMeta.classList.toggle('hidden', !els.resultMeta.textContent);
     setGenerating(false);
+    artistClassifier.refresh();
 }
 
 function downloadDataUrl(dataUrl, filename) {
@@ -1362,6 +1379,7 @@ function bindEvents() {
     }
     els.dropZone.addEventListener('drop', event => addReferenceFiles(event.dataTransfer.files));
     window.addEventListener('paste', event => {
+        if (artistClassifier.isActive) return;
         const files = [...(event.clipboardData?.files || [])].filter(file => file.type.startsWith('image/'));
         if (files.length) addReferenceFiles(files);
     });
@@ -1370,7 +1388,7 @@ function bindEvents() {
     els.generate.addEventListener('click', generate);
     els.cancel.addEventListener('click', () => generationController?.abort());
     document.addEventListener('keydown', event => {
-        if (imageViewer.isOpen) return;
+        if (imageViewer.isOpen || artistClassifier.isActive) return;
         if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
             event.preventDefault();
             if (!els.generate.disabled) generate();

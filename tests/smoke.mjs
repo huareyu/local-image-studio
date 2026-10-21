@@ -48,7 +48,7 @@ async function post(path, body) {
 try {
     launch('tests/mock-provider.mjs', { MOCK_PORT: String(MOCK_PORT) });
     launch('tests/mock-proxy.mjs', { PROXY_PORT: String(PROXY_PORT) });
-    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir });
+    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir, IMAGE_STUDIO_KALOSCOPE_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}` });
     await Promise.all([
         waitFor(`http://127.0.0.1:${APP_PORT}`),
         waitFor(`http://127.0.0.1:${MOCK_PORT}/models`),
@@ -219,7 +219,24 @@ try {
     const naiModels = await post('/api/models', { profile: novelaiProfile });
     assert.ok(naiModels.catalog && naiModels.models.includes('nai-diffusion-5-full'));
 
-    console.log('Smoke tests passed: automatic image archiving, idempotent legacy imports, local-only folder API, all providers, NovelAI personal token/JSON/proxy, V3/V4.5/V5/Medium parameters, reference isolation, key check');
+    const beforeArtistFiles = (await fs.readdir(imagesDir)).length;
+    const classification = await post('/api/artists/classify', { dataUrl: openai.dataUrl, consent: true, topK: 2,
+        apiKey: 'DO_NOT_SEND_CLASSIFIER_KEY', prompt: 'PRIVATE_CLASSIFIER_PROMPT',
+        proxy: { proxyEnabled: true, proxyUrl: `http://127.0.0.1:${PROXY_PORT}`, proxyUsername: 'proxy-user', proxyPassword: 'proxy-pass' } });
+    assert.deepEqual(classification.artists.map(artist => artist.name), ['kamochiru', 'to_e']);
+    const artistRequests = await fetch(`${endpoint}/__artist-requests`).then(response => response.json());
+    assert.equal(artistRequests.every(request => !request.authorization), true, 'Classifier sent authentication to the public Space');
+    assert.equal(JSON.stringify(artistRequests).includes('DO_NOT_SEND_CLASSIFIER_KEY'), false);
+    assert.equal(JSON.stringify(artistRequests).includes('PRIVATE_CLASSIFIER_PROMPT'), false);
+    assert.equal(artistRequests.find(request => request.type === 'predict').payload.data[3], 0);
+    assert.equal((await fs.readdir(imagesDir)).length, beforeArtistFiles, 'Classifier archived uploaded art');
+    for (const headers of [{ Origin: 'https://evil.test', 'Content-Type': 'application/json' }, { 'Content-Type': 'text/plain' }]) {
+        const response = await fetch(`http://127.0.0.1:${APP_PORT}/api/artists/classify`, { method: 'POST', headers, body: JSON.stringify({ dataUrl: openai.dataUrl, consent: true }) });
+        assert.ok([403, 415].includes(response.status));
+    }
+    const noConsent = await fetch(`http://127.0.0.1:${APP_PORT}/api/artists/classify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dataUrl: openai.dataUrl }) });
+    assert.equal(noConsent.status, 400);
+    console.log('Smoke tests passed: artist upload/Gradio/SSE/proxy/consent/key isolation, automatic image archiving, idempotent legacy imports, local-only folder API, all providers, NovelAI personal token/JSON/proxy, V3/V4.5/V5/Medium parameters, reference isolation, key check');
 } finally {
     for (const child of children) child.kill();
     await Promise.all(children.filter(child => child.exitCode === null).map(child => new Promise(resolve => child.once('exit', resolve))));
