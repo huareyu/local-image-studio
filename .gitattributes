@@ -1,0 +1,2 @@
+# Preserve the upstream CSV byte-for-byte, including on Windows checkouts.
+public/data/danbooru.csv -text

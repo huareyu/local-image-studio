@@ -16,7 +16,7 @@
                 <p>локальная генерация с референсами</p>
             </div>
         </div>
-        <div class="server-pill"><span></span> работает локально</div>
+        <div class="topbar-actions"><nav class="workspace-nav" aria-label="Разделы"><a href="#prompt-panel">Создать</a><a href="#history-gallery">Галерея</a></nav><div class="server-pill"><span></span> работает локально</div></div>
     </header>
 
     <main class="workspace">
@@ -257,7 +257,7 @@
                 </div>
             </section>
 
-            <section class="panel prompt-panel">
+            <section id="prompt-panel" class="panel prompt-panel">
                 <div class="section-heading">
                     <div>
                         <span class="eyebrow">Задание</span>
@@ -277,6 +277,44 @@
                     <span>Негативный промпт <small>необязательно</small></span>
                     <textarea id="negative-prompt" rows="2" placeholder="text, watermark, low quality…"></textarea>
                 </label>
+
+                <details id="tag-assistant" class="tag-assistant hidden">
+                    <summary>✦ Помощник промпта · теги и подсказки</summary>
+                    <label class="check-row"><input id="tag-enabled" type="checkbox" checked><span>Подсказывать теги при вводе в NovelAI</span></label>
+                    <p class="hint">Пиши тег, например <code>blue ha</code>, или ищи ниже по-русски. В подсказках: ↑ ↓ — выбрать, Enter — вставить, Esc — скрыть. Для чанков по-прежнему работает @.</p>
+                    <p id="tag-base-status" class="hint" role="status" aria-live="polite">Большая база Danbooru загрузится при включении NovelAI.</p>
+                    <button id="tag-retry" class="text-button hidden" type="button">Повторить загрузку базы</button>
+                    <label><span>Куда добавлять и что редактировать</span><select id="tag-target"><option value="prompt">Сцена · основной промпт</option><option value="prefix">Префикс / стиль</option><option value="negative">Негатив NovelAI</option></select></label>
+                    <div class="tag-search-row">
+                        <label><span>Найти тег</span><input id="tag-search" type="search" placeholder="blue hair, коса, портрет…" autocomplete="off"></label>
+                        <label><span>Категория</span><select id="tag-category"><option value="">Все категории</option></select></label>
+                    </div>
+                    <p id="tag-count" class="hint" role="status" aria-live="polite"></p>
+                    <div id="tag-results" class="tag-results"></div>
+                    <div class="library-pagination"><button id="tag-previous" class="icon-button" type="button" aria-label="Предыдущие теги">‹</button><span id="tag-page"></span><button id="tag-next" class="icon-button" type="button" aria-label="Следующие теги">›</button></div>
+                    <h3>В выбранном поле</h3>
+                    <div id="tag-current" class="tag-current"></div>
+                    <p id="tag-selected" class="hint"></p>
+                    <div class="tag-edit-actions">
+                        <button id="tag-left" class="secondary-button" type="button" aria-label="Переместить выбранную группу влево" disabled>←</button>
+                        <button id="tag-right" class="secondary-button" type="button" aria-label="Переместить выбранную группу вправо" disabled>→</button>
+                        <button id="tag-stronger" class="secondary-button" type="button" disabled>{ Усилить }</button>
+                        <button id="tag-weaker" class="secondary-button" type="button" disabled>[ Ослабить ]</button>
+                        <button id="tag-remove" class="secondary-button danger-text" type="button" disabled>Убрать</button>
+                    </div>
+                    <p class="hint">Меняются только выбранные группы. Их можно переставлять стрелками, перетаскивать или нажимать Shift + ← / →. Сочетания сохраняй как стиль или чанк в библиотеке выше.</p>
+                    <details class="tag-help">
+                        <summary>Словарь и справка по промптам</summary>
+                        <p id="tag-dictionary" class="hint"></p>
+                        <div class="tag-edit-actions"><label class="upload-button">＋ Импорт словаря<input id="tag-upload" type="file" accept=".json,.txt,.csv" hidden></label><button id="tag-reset" class="text-button" type="button" disabled>Убрать свой словарь</button></div>
+                        <p class="hint">JSON: массив тегов или <code>{"Категория": [{"tag": "blue_hair", "desc": "Голубые волосы"}]}</code>. TXT: по тегу на строку. CSV: <code>tag,count</code> или Danbooru CSV. До 25 МБ / 250 000 тегов. Импорт дополняет базу и хранится только в этом браузере.</p>
+                        <p class="hint">Большая база включена автоматически: 140 782 тега Danbooru с алиасами, категориями и популярностью. Поиск выполняется в фоновом потоке. Русские пояснения есть у 208 стартовых тегов; остальные ищутся по английским названиям и алиасам. Это локальный снимок, не вся постоянно меняющаяся база Danbooru и не гарантия поддержки тега моделью. В базе есть теги 18+.</p>
+                        <p class="hint">Источник данных: <a href="https://github.com/DominikDoom/a1111-sd-webui-tagcomplete/blob/209b1dd76b69e95ba6b1619ea5d13e68446607b7/tags/danbooru.csv" target="_blank" rel="noopener noreferrer">Danbooru CSV · DominikDoom</a> · <a href="/data/DANBOORU-LICENSE.txt" target="_blank" rel="noopener noreferrer">MIT / уведомление об авторстве</a>.</p>
+                        <p class="hint">Начни с персонажа, затем внешность → одежда и поза → ракурс → фон и свет. В негатив добавляй то, чего не должно быть в картинке. Неизвестный словарю тег всё равно можно написать вручную; подсказка не гарантирует результат.</p>
+                        <p class="hint"><code>{tag}</code> усиливает, <code>[tag]</code> ослабляет. Числовые веса <code>1.2::tag::</code> работают на V4 и новее; отрицательные — V4.5 и новее. Группы с весами и чанки не разбиваются по внутренним запятым.</p>
+                        <p class="hint">Вдохновлено <a href="https://github.com/sekiryl/tag-prompt-generator" target="_blank" rel="noopener noreferrer">Tag Prompt Generator · sekiryl</a>. Код помощника и стартовый словарь написаны для Image Studio. <a href="https://docs.novelai.net/en/image/strengthening-weakening/" target="_blank" rel="noopener noreferrer">Справка NovelAI по весам</a>.</p>
+                    </details>
+                </details>
 
                 <div class="form-grid params-grid">
                     <label>
@@ -324,6 +362,7 @@
                         <p id="result-meta" class="hint hidden"></p>
                     </div>
                     <div id="result-actions" class="result-actions hidden">
+                        <button id="expand-result" class="secondary-button" type="button">⛶ Смотреть</button>
                         <button id="download-result" class="secondary-button" type="button">↓ Скачать</button>
                         <button id="result-to-reference" class="secondary-button" type="button">＋ В референсы</button>
                     </div>
@@ -349,11 +388,11 @@
                 </button>
             </section>
 
-            <section class="panel history-panel">
+            <section id="history-gallery" class="panel history-panel">
                 <div class="section-heading history-heading">
                     <div>
                         <span class="eyebrow">Локально</span>
-                        <h2>История</h2>
+                        <h2>Галерея</h2>
                     </div>
                     <div class="history-actions">
                         <button id="open-image-folder" class="secondary-button" type="button" title="Открыть папку generated-images на компьютере">📁 Папка с картинками</button>
@@ -361,6 +400,13 @@
                     </div>
                 </div>
                 <p id="history-folder-hint" class="hint history-folder-hint" role="status">Новые картинки автоматически сохраняются в локальную папку сразу после генерации. Нажимать «Скачать» или открывать папку для этого не нужно.</p>
+                <div class="history-filters">
+                    <label class="history-search"><span>Поиск по картинкам</span><input id="history-search" type="search" placeholder="Промпт, модель, профиль, seed…" autocomplete="off" aria-controls="history-list"></label>
+                    <label><span>Провайдер</span><select id="history-provider"><option value="">Все провайдеры</option><option value="gemini">Gemini / Nano Banana</option><option value="openai">OpenAI</option><option value="openrouter">OpenRouter</option><option value="novelai">NovelAI</option></select></label>
+                    <label><span>Дата генерации</span><input id="history-date" type="date"></label>
+                    <label><span>Порядок</span><select id="history-order"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option></select></label>
+                </div>
+                <div class="history-summary"><span id="history-count" role="status" aria-live="polite"></span><button id="history-reset" type="button" class="text-button hidden">Сбросить фильтры</button></div>
                 <div id="history-selection" class="history-selection hidden">
                     <div class="history-selection-row">
                         <span id="history-selected-count">Выбрано: 0</span>
@@ -374,14 +420,44 @@
                     <p class="hint">Удаляется только запись из истории. Файлы в папке и картинки в референсах остаются.</p>
                 </div>
                 <div id="history-list" class="history-list"></div>
+                <p id="history-empty" class="history-empty hidden">История пуста. Здесь появятся твои генерации.</p>
                 <div id="history-pagination" class="history-pagination hidden">
-                    <button id="history-previous" class="icon-button" type="button" aria-label="Предыдущая страница истории">‹</button>
-                    <span id="history-page-label"></span>
-                    <button id="history-next" class="icon-button" type="button" aria-label="Следующая страница истории">›</button>
+                    <nav class="history-page-buttons" aria-label="Страницы галереи">
+                        <button id="history-previous" class="icon-button" type="button" aria-label="Предыдущая страница истории">‹</button>
+                        <span id="history-pages"></span>
+                        <button id="history-next" class="icon-button" type="button" aria-label="Следующая страница истории">›</button>
+                    </nav>
+                    <div class="history-page-jump"><span id="history-page-label"></span><label><span class="sr-only">Перейти на страницу</span><input id="history-page" type="number" min="1" value="1" aria-label="Перейти на страницу" title="Введи номер страницы и нажми Enter"></label></div>
                 </div>
             </section>
         </section>
     </main>
+
+    <dialog id="image-viewer" class="image-viewer" aria-labelledby="viewer-title">
+        <div class="viewer-shell">
+            <header class="viewer-header">
+                <div class="viewer-heading"><span id="viewer-counter" class="count-badge" aria-live="polite"></span><h2 id="viewer-title">Изображение</h2></div>
+                <button id="viewer-close" class="icon-button" type="button" aria-label="Закрыть просмотр" autofocus>×</button>
+            </header>
+            <div id="viewer-stage" class="viewer-stage">
+                <img id="viewer-image" class="hidden" alt="" draggable="false">
+                <button id="viewer-previous" class="viewer-arrow viewer-arrow-previous" type="button" aria-label="Предыдущее изображение">‹</button>
+                <button id="viewer-next" class="viewer-arrow viewer-arrow-next" type="button" aria-label="Следующее изображение">›</button>
+            </div>
+            <div id="viewer-strip" class="viewer-strip" aria-label="Ближайшие изображения"></div>
+            <div class="viewer-footer">
+                <p id="viewer-meta" class="hint"></p>
+                <p id="viewer-status" class="hint viewer-status" role="status" aria-live="polite"></p>
+                <div class="viewer-actions">
+                    <button id="viewer-download" class="secondary-button" type="button">↓ Скачать</button>
+                    <button id="viewer-use-prompt" class="secondary-button" type="button">Использовать промпт</button>
+                    <button id="viewer-reference" class="secondary-button" type="button">＋ В референсы</button>
+                </div>
+                <details id="viewer-details"><summary>Промпт изображения</summary><p id="viewer-prompt"></p></details>
+                <p class="viewer-key-hint">← → — листать · Esc — закрыть · На телефоне — свайп по картинке</p>
+            </div>
+        </div>
+    </dialog>
 
     <template id="reference-template">
         <article class="reference-card">

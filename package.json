@@ -1,11 +1,12 @@
 {
   "name": "local-image-studio",
-  "version": "0.6.1",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test tests/novelai.test.mjs tests/image-archive.test.mjs tests/prompt-tools.test.mjs && node tests/smoke.mjs",
+    "test": "node --test tests/novelai.test.mjs tests/image-archive.test.mjs tests/prompt-tools.test.mjs tests/history-tools.test.mjs tests/tag-tools.test.mjs tests/tag-catalog.test.mjs && node tests/smoke.mjs",
+    "data:danbooru": "node scripts/update-danbooru.mjs",
     "test:browser": "node tests/browser.mjs"
   },
   "engines": {

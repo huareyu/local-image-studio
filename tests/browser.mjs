@@ -51,14 +51,22 @@ async function evaluate(expression) {
 }
 
 async function change(selector, value, event = 'change') {
-    return evaluate(`(() => {
+    await evaluate(`(() => {
         const field = document.querySelector(${JSON.stringify(selector)});
         ${typeof value === 'boolean' ? `field.checked = ${value};` : `field.value = ${JSON.stringify(String(value))};`}
         field.dispatchEvent(new Event(${JSON.stringify(event)}, { bubbles: true }));
     })()`);
+    if (['#tag-search', '#tag-category', '#tag-target'].includes(selector)) await waitTagResults();
 }
 
-async function click(selector) { await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); }
+async function waitTagResults() {
+    await waitUntil(() => evaluate("!document.querySelector('#tag-assistant')?.open || document.querySelector('#tag-assistant').classList.contains('hidden') || document.querySelector('#tag-results').dataset.loading === 'false'"), 'asynchronous tag results');
+}
+async function click(selector) {
+    if (selector.includes('tag-')) await waitTagResults();
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    if (selector.includes('tag-')) await waitTagResults();
+}
 async function press(key, code, virtualKey, modifiers = 0) {
     await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: virtualKey, modifiers, ...(key === 'Enter' ? { text: '\r' } : {}) });
     await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: virtualKey, modifiers });
@@ -107,7 +115,7 @@ async function layoutCheck() {
     const bad = await evaluate(`(() => {
         const width = window.innerWidth;
         return [...document.querySelectorAll('main, .panel, .section-heading, input, select, textarea, button, .chunk-rich-editor, .chunk-capsule')]
-            .filter(node => node.getClientRects().length && !node.closest('template'))
+            .filter(node => node.getClientRects().length && !node.closest('template, .viewer-strip'))
             .filter(node => { const box = node.getBoundingClientRect(); return box.right > width + 1 || box.left < -1; })
             .map(node => node.id || node.className || node.tagName);
     })()`);
@@ -275,6 +283,63 @@ try {
     await reload();
     await waitUntil(() => evaluate("document.querySelector('#history-page-label').textContent.includes('28 изображений')"), 'paged history');
     assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 12);
+    // Gallery filters apply to all pages, retain selection, and never edit the draft.
+    await change('#history-search', 'LEGACY image 26', 'input');
+    assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 1);
+    assert.equal(await evaluate("document.querySelector('#history-count').textContent"), 'Найдено: 1 из 28');
+    await click('#history-select');
+    await click('#history-select-page');
+    await change('#history-provider', 'novelai');
+    assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 0);
+    assert.equal(await evaluate("document.querySelector('#history-select-page').disabled"), true);
+    assert.equal(await evaluate("document.querySelector('#history-empty').classList.contains('hidden')"), false);
+    assert.equal(await evaluate("document.querySelector('#history-selected-count').textContent"), 'Выбрано: 1');
+    await click('#history-reset');
+    await click('#history-select');
+    await change('#history-order', 'oldest');
+    assert.equal(await evaluate("document.querySelector('.history-item').dataset.id"), 'legacy-0');
+    const legacyDate = await evaluate("(() => { const d = new Date(1720000000000); return [d.getFullYear(), String(d.getMonth()+1).padStart(2,'0'), String(d.getDate()).padStart(2,'0')].join('-'); })()");
+    await change('#history-date', legacyDate);
+    assert.equal(await evaluate("document.querySelector('#history-count').textContent"), 'Найдено: 27 из 28');
+    await click('#history-reset');
+    await change('#history-page', 3);
+    assert.equal(await evaluate("document.querySelector('#history-list').children.length"), 4);
+    await click('.history-page-number[aria-label="Страница 2"]');
+    assert.equal(await evaluate("document.querySelector('#history-page').value"), '2');
+    await change('#history-search', 'legacy-test', 'input');
+    assert.equal(await evaluate("document.querySelector('#history-page').value"), '1', 'Search did not reset the page');
+    const draftBeforeViewing = await evaluate("document.querySelector('#prompt').value");
+    await click('.history-preview');
+    await waitUntil(() => evaluate("document.querySelector('#viewer-image').dataset.id === 'legacy-26'"), 'gallery viewer');
+    assert.equal(await evaluate("document.querySelector('#viewer-counter').textContent"), '1 / 27');
+    assert.equal(await evaluate("document.querySelector('#viewer-previous').disabled"), true);
+    await press('ArrowRight', 'ArrowRight', 39);
+    await waitUntil(() => evaluate("document.querySelector('#viewer-image').dataset.id === 'legacy-25'"), 'keyboard gallery next');
+    await press('End', 'End', 35);
+    await waitUntil(() => evaluate("document.querySelector('#viewer-image').dataset.id === 'legacy-0'"), 'viewer crosses page boundaries');
+    assert.equal(await evaluate("document.querySelector('#viewer-counter').textContent"), '27 / 27');
+    assert.equal(await evaluate("document.querySelector('#viewer-next').disabled"), true);
+    await evaluate("for (let i=0; i<30; i++) document.querySelector('#viewer-previous').click();");
+    await waitUntil(() => evaluate("document.querySelector('#viewer-image').dataset.id === 'legacy-26'"), 'rapid navigation discards stale image loads');
+    await click('.viewer-thumb[data-id="legacy-23"]');
+    await waitUntil(() => evaluate("document.querySelector('#viewer-image').dataset.id === 'legacy-23'"), 'filmstrip navigation');
+    await press('ArrowRight', 'ArrowRight', 39);
+    await waitUntil(() => evaluate("document.querySelector('#viewer-image').dataset.id === 'legacy-22'"), 'keyboard after filmstrip navigation');
+    await press('End', 'End', 35);
+    await waitUntil(() => evaluate("document.querySelector('#viewer-image').dataset.id === 'legacy-0'"), 'return to last image');
+    await click('#viewer-details summary');
+    assert.equal(await evaluate("document.querySelector('#viewer-prompt').textContent"), 'Legacy image 0');
+    await evaluate("window.savedAnchorClick = HTMLAnchorElement.prototype.click; HTMLAnchorElement.prototype.click = function() { window.lastDownload = { href: this.href, filename: this.download }; };");
+    await click('#viewer-download');
+    const lastDownload = await evaluate('window.lastDownload');
+    assert.equal(lastDownload.href, generatedEntries[0].dataUrl);
+    assert.ok(lastDownload.filename.includes(new Date(1720000000000).toISOString().replace(/[:.]/g, '-')), 'Download came from the previously viewed image');
+    await evaluate('HTMLAnchorElement.prototype.click = window.savedAnchorClick');
+    await press('Escape', 'Escape', 27);
+    assert.equal(await evaluate("document.querySelector('#image-viewer').open"), false);
+    assert.equal(await evaluate("document.body.classList.contains('viewer-open')"), false);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), draftBeforeViewing, 'Browsing overwrote the draft');
+    await click('#history-reset');
     await cdp('Fetch.enable', { patterns: [{ urlPattern: `${origin}/api/images/open-folder`, requestStage: 'Request' }] });
     await click('#open-image-folder');
     assert.equal(await evaluate("document.querySelector('#history-select').disabled"), true, 'Deleting during a legacy import was not blocked');
@@ -315,7 +380,15 @@ try {
     assert.equal(await evaluate("document.querySelector('#history-selected-count').textContent"), 'Выбрано: 0');
     await click('#history-select');
     await click('.history-preview');
-    await waitUntil(() => evaluate("!document.querySelector('#result-image').classList.contains('hidden')"), 'history preview after selection');
+    await waitUntil(() => evaluate("document.querySelector('#image-viewer').open && !document.querySelector('#viewer-use-prompt').disabled"), 'history preview after selection');
+    await click('#viewer-use-prompt');
+    await waitUntil(() => evaluate("!document.querySelector('#result-image').classList.contains('hidden')"), 'explicit history prompt reuse');
+    await click('#expand-result');
+    await waitUntil(() => evaluate("document.querySelector('#image-viewer').open && !document.querySelector('#viewer-download').disabled"), 'expand canvas result');
+    await click('#viewer-close');
+    // Loading a small preview must not reduce the original used for download/reference.
+    const thumbnailSize = await evaluate("[...document.querySelectorAll('.history-preview img')].filter(img => img.complete && img.naturalWidth).map(img => Math.max(img.naturalWidth, img.naturalHeight))");
+    assert.ok(thumbnailSize.length && thumbnailSize.every(size => size <= 256), 'Gallery displays full-sized original previews');
     await reload();
     await waitUntil(() => evaluate("document.querySelector('#history-page-label').textContent.includes('26 изображений')"), 'history deletion persisted');
     // Different ref sets keep independent checkmarks through switching/reload.
@@ -415,6 +488,26 @@ try {
         await layoutCheck();
         await click('#history-select');
     }
+    // Real touch events swipe the viewer on phones; vertical/multi-touch gestures do not navigate.
+    await click('.history-preview');
+    await waitUntil(() => evaluate("!document.querySelector('#viewer-download').disabled"), 'mobile viewer');
+    await layoutCheck();
+    const touchBox = await evaluate("(() => { const b = document.querySelector('#viewer-stage').getBoundingClientRect(); return { x: b.left + b.width*.7, y: b.top + b.height/2 }; })()");
+    const beforeSwipe = await evaluate("document.querySelector('#viewer-counter').textContent");
+    await cdp('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touchBox.x, y: touchBox.y }] });
+    await cdp('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touchBox.x - 120, y: touchBox.y + 2 }] });
+    await cdp('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await waitUntil(() => evaluate(`document.querySelector('#viewer-counter').textContent !== ${JSON.stringify(beforeSwipe)} && !document.querySelector('#viewer-download').disabled`), 'real phone swipe');
+    const afterSwipe = await evaluate("document.querySelector('#viewer-counter').textContent");
+    await cdp('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touchBox.x, y: touchBox.y }] });
+    await cdp('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touchBox.x + 5, y: touchBox.y - 90 }] });
+    await cdp('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    assert.equal(await evaluate("document.querySelector('#viewer-counter').textContent"), afterSwipe, 'Vertical scrolling flipped the image');
+    const viewerBounds = await evaluate("(() => { const b = document.querySelector('#image-viewer').getBoundingClientRect(); const close = document.querySelector('#viewer-close').getBoundingClientRect(); return { top: b.top, bottom: b.bottom, height: innerHeight, closeTop: close.top }; })()");
+    assert.ok(viewerBounds.top >= 0 && viewerBounds.bottom <= viewerBounds.height + 1 && viewerBounds.closeTop >= 0, 'Mobile viewer is clipped');
+    const viewerScreenshot = await cdp('Page.captureScreenshot', { format: 'png' });
+    await fs.writeFile(path.join(root, 'preview-gallery-viewer-mobile.png'), Buffer.from(viewerScreenshot.data, 'base64'));
+    await click('#viewer-close');
     await change('#proxy-enabled', true);
     await layoutCheck();
     const screenshot = await cdp('Page.captureScreenshot', { captureBeyondViewport: true, format: 'png' });
@@ -639,8 +732,129 @@ try {
     })()`);
     const capsuleScreenshot = await cdp('Page.captureScreenshot', { captureBeyondViewport: true, format: 'png', clip: capsuleClip });
     await fs.writeFile(path.join(root, 'preview-chunk-capsules-mobile.png'), Buffer.from(capsuleScreenshot.data, 'base64'));
+
+    // Local NovelAI tag help: real typing, preserving chunk/weight syntax, imports and mode isolation.
+    const beforeTagRequests = (await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response => response.json())).length;
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await waitUntil(() => evaluate("document.querySelector('#tag-assistant').dataset.ready === 'true'"), 'tag helper ready');
+    await waitUntil(() => evaluate("Number(document.querySelector('#tag-assistant').dataset.baseCount) > 140000"), 'large Danbooru catalog loaded');
+    await change('#prompt', '1boy, ', 'input');
+    await evaluate("document.querySelector('#prompt').focus(); document.querySelector('#prompt').setSelectionRange(6,6)");
+    await cdp('Input.insertText', { text: 'blue ha' });
+    await waitUntil(() => evaluate("document.querySelector('.tag-suggestions[data-field=prompt] strong')?.textContent === 'blue hair'"), 'tag autocomplete');
+    await press('Enter', 'Enter', 13);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '1boy, blue hair, ');
+    await press('z', 'KeyZ', 90, 2);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '1boy, blue ha', 'Tag insertion broke undo');
+    await press('z', 'KeyZ', 90, 10);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '1boy, blue hair, ');
+    await change('#prompt', '@И', 'input');
+    await evaluate("document.querySelector('#prompt').focus(); document.querySelector('#prompt').setSelectionRange(2,2)");
+    assert.equal(await evaluate("document.querySelector('.tag-suggestions[data-field=prompt]').children.length"), 0, 'Tag suggestions conflict with @ chunks');
+    await press('Enter', 'Enter', 13);
+    assert.equal(await evaluate("document.querySelector('#prompt').value.startsWith('!macro:Итан!')"), true);
+    await change('#prompt', '!macro:Итан!, 1.2::blue ha::, 1boy', 'input');
+    await evaluate("(() => { const f=document.querySelector('#prompt'); f.focus(); const at=f.value.indexOf('blue ha')+7; f.setSelectionRange(at,at); })()");
+    await waitUntil(() => evaluate("document.querySelector('.tag-suggestions[data-field=prompt] strong')?.textContent === 'blue hair'"), 'completion inside numeric emphasis');
+    await press('Enter', 'Enter', 13);
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '!macro:Итан!, 1.2::blue hair::, 1boy');
+    assert.equal(await evaluate("document.querySelectorAll('.chunk-rich-editor[data-field=prompt] .chunk-capsule').length"), 1);
+    await click('#tag-assistant > summary');
+    await waitUntil(() => evaluate("document.querySelectorAll('.tag-current-token').length === 3"), 'prompt construction groups');
+    await click('.tag-current-token[data-index="1"]');
+    await click('#tag-stronger');
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '!macro:Итан!, {1.2::blue hair::}, 1boy');
+    await click('#tag-weaker');
+    await click('#tag-left');
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '1.2::blue hair::, !macro:Итан!, 1boy');
+    await click('#tag-right');
+    await change('#tag-search', 'коса', 'input');
+    await click('.tag-choice[data-tag="braid"]');
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '!macro:Итан!, 1.2::blue hair::, 1boy, braid, ');
+    assert.equal(await evaluate("document.querySelector('.tag-choice[data-tag=braid]').disabled"), true, 'Duplicate tag is not marked');
+    await click('.tag-current-token[data-index="3"]');
+    await click('#tag-remove');
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), '!macro:Итан!, 1.2::blue hair::, 1boy, ');
+    await change('#tag-target', 'prefix');
+    await change('#prefix', '{{artist:custom}}, ', 'input');
+    await change('#tag-search', 'мягкое освещение', 'input');
+    await click('.tag-choice[data-tag="soft lighting"]');
+    assert.equal(await evaluate("document.querySelector('#prefix').value"), '{{artist:custom}}, soft lighting, ');
+    await change('#tag-target', 'negative');
+    await change('#novelai-negative', 'text, ', 'input');
+    await change('#tag-search', 'водяной', 'input');
+    await click('.tag-choice[data-tag="watermark"]');
+    assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'text, watermark, ');
+    await change('#model', 'nai-diffusion-5-full-medium', 'input');
+    assert.equal(await evaluate("[...document.querySelectorAll('.tag-choice')].every(button=>button.disabled)"), true, 'Helper edits unsupported Medium negative');
+    await change('#model', 'nai-diffusion-4-5-full', 'input');
+    await change('#tag-target', 'prompt');
+    await change('#tag-enabled', false);
+    await change('#prompt', 'blue ha', 'input');
+    assert.equal(await evaluate("document.querySelector('.tag-suggestions[data-field=prompt]').children.length"), 0);
+    await reload();
+    assert.equal(await evaluate("document.querySelector('#tag-enabled').checked"), false, 'Suggestion toggle did not survive reload');
+    await click('#mode-standard');
+    assert.equal(await evaluate("document.querySelector('#tag-assistant').classList.contains('hidden')"), true);
+    await change('#prompt', 'blue ha', 'input');
+    assert.equal(await evaluate("document.querySelector('.tag-suggestions[data-field=prompt]').children.length"), 0, 'Tag helper leaked into ordinary mode');
+    await click('#mode-novelai');
+    await change('#tag-enabled', true);
+    await click('#tag-assistant > summary');
+    await change('#tag-search', 'сияние', 'input');
+    assert.equal(await evaluate("document.querySelectorAll('.tag-choice').length"), 0);
+    await evaluate(`(() => {
+        const input=document.querySelector('#tag-upload'); const data=new DataTransfer();
+        data.items.add(new File([JSON.stringify({ 'Мои эффекты': [{tag:'ultra_glow',desc:'Сияние <img src=x onerror="window.tagXss=true">'}] })], 'my-tags.json', {type:'application/json'}));
+        input.files=data.files; input.dispatchEvent(new Event('change',{bubbles:true}));
+    })()`);
+    await waitUntil(() => evaluate("document.querySelector('.tag-choice[data-tag=\"ultra glow\"]') && !document.querySelector('#tag-upload').disabled"), 'custom tag dictionary import');
+    assert.equal(await evaluate("document.querySelector('#tag-results img') !== null || Boolean(window.tagXss)"), false, 'Imported description executed HTML');
+    await click('.tag-choice[data-tag="ultra glow"]');
+    assert.equal(await evaluate("document.querySelector('#prompt').value"), 'blue ha, ultra glow, ');
+    await evaluate("(() => { const f=document.querySelector('#tag-upload'), d=new DataTransfer(); d.items.add(new File(['not JSON'],'bad.json')); f.files=d.files; f.dispatchEvent(new Event('change',{bubbles:true})); })()");
+    await waitUntil(() => evaluate("!document.querySelector('#tag-upload').disabled && document.querySelector('#message').textContent.includes('Не удалось загрузить словарь')"), 'bad dictionary error');
+    assert.equal(await evaluate("document.querySelector('#tag-dictionary').textContent.includes('Из файла: 1')"), true, 'Invalid import erased the dictionary');
+    await reload();
+    await waitUntil(() => evaluate("document.querySelector('#tag-dictionary').textContent.includes('Из файла: 1')"), 'custom dictionary survives reload');
+    await click('#tag-assistant > summary');
+    await change('#tag-search', 'сияние', 'input');
+    assert.equal(await evaluate("document.querySelector('.tag-choice strong').textContent.includes('ultra glow')"), true);
+    await change('#tag-search', 'heterochromia', 'input');
+    assert.equal(await evaluate("document.querySelector('.tag-choice strong').textContent.includes('heterochromia')"), true, 'Custom dictionary replaced Danbooru');
+    await change('#tag-category', 'Авторы');
+    await change('#tag-search', 'kamochiru', 'input');
+    assert.ok(await evaluate("Number(document.querySelector('#tag-count').textContent.replace(/[^0-9]/g,'')) > 0"), 'Danbooru artist search not available');
+    await change('#tag-search', 'moustachecatofdeath', 'input');
+    assert.equal(await evaluate("document.querySelector('.tag-choice').dataset.tag"), 'kamochiru', 'Danbooru alias lookup did not find the canonical artist tag');
+    await change('#tag-category', '');
+    await change('#tag-search', 'wolf', 'input');
+    assert.ok(await evaluate("Number(document.querySelector('#tag-count').textContent.replace(/[^0-9]/g,'')) > 12"), 'Large catalog did not expand matches');
+    await click('#tag-next');
+    assert.equal(await evaluate("document.querySelector('#tag-page').textContent.startsWith('2 /')"), true);
+    // Stale background results must not overwrite the most recent search.
+    await evaluate("for(const value of ['red ha','wolf','blue hair']) { const f=document.querySelector('#tag-search'); f.value=value; f.dispatchEvent(new Event('input',{bubbles:true})); }");
+    await waitTagResults();
+    assert.equal(await evaluate("document.querySelector('.tag-choice strong').textContent.includes('blue hair')"), true);
+    await change('#tag-search', 'сияние', 'input');
+    await evaluate('window.confirm = () => true');
+    await click('#tag-reset');
+    await waitUntil(() => evaluate("!document.querySelector('#tag-dictionary').textContent.includes('Из файла:')"), 'reset custom dictionary');
+    assert.equal(await evaluate("document.querySelectorAll('.chunk-rich-editor[data-field=prompt]').length"), 1, 'Dictionary reset removed the editor');
+    await change('#prompt', '1boy, !macro:Итан!, green eyes, brown hair', 'input');
+    assert.equal(await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt] .chunk-capsule').classList.contains('missing')"), false, 'Dictionary reset deleted saved chunks');
+    await change('#tag-search', 'волосы', 'input');
+    for (const width of [390, 430]) {
+        await cdp('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: true });
+        await layoutCheck();
+    }
+    await evaluate("window.scrollTo(0, window.scrollY + document.querySelector('#tag-assistant').getBoundingClientRect().top - 80)");
+    const tagClip = await evaluate("(() => {const b=document.querySelector('#tag-assistant').getBoundingClientRect();return {x:b.left+scrollX,y:b.top+scrollY,width:b.width,height:b.height,scale:1}})()");
+    const tagScreenshot = await cdp('Page.captureScreenshot', {captureBeyondViewport:true, format:'png',clip:tagClip});
+    await fs.writeFile(path.join(root, 'preview-tag-assistant-mobile.png'), Buffer.from(tagScreenshot.data,'base64'));
+    assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response=>response.json())).length, beforeTagRequests, 'Local tag help made a generation request');
     assert.deepEqual(errors, [], 'Browser JS errors');
-    console.log('Browser checks passed: inline colored capsules, real keyboard/caret/Unicode/IME, copy/cut/plain paste, atomic deletion, undo/redo, reload, styles/previews/mode isolation, chunk autocomplete/expansion/renaming, no API calls for invalid chunks, database migration, history, profiles, mobile layout');
+    console.log('Browser checks passed: large 140k+ Danbooru worker catalog/aliases/categories/pagination/stale-query protection, local NovelAI tag suggestions/imports/Russian search/weights/reordering/undo/isolation, no generation calls for tag help, gallery search/provider/date/sort/page shortcuts, filtered full-screen browsing, real keyboard and phone swipes, rapid navigation, current-image download, small thumbnails, explicit prompt reuse, inline colored capsules, real keyboard/caret/Unicode/IME, copy/cut/plain paste, atomic deletion, undo/redo, reload, styles/previews/mode isolation, chunk autocomplete/expansion/renaming, no API calls for invalid chunks, database migration, history, profiles, mobile layout');
 } finally {
     socket?.close();
     for (const request of pending.values()) clearTimeout(request.timeout);

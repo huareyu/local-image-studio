@@ -2,7 +2,7 @@
 
 一个运行在本机的轻量级 AI 图像生成工作台。它提供连接配置、多参考图管理、提示词编辑和本地生成历史，不依赖 SillyTavern，也不需要安装前端框架。
 
-> 当前版本：`0.6.1`<br>
+> 当前版本：`0.8.1`<br>
 > 界面语言：俄语<br>
 > 运行环境：Node.js 20 或更高版本
 
@@ -23,9 +23,12 @@
 - 下载生成结果，或将结果重新加入参考图库；
 - 使用 IndexedDB 在本地保存参考图和生成历史；
 - 自动把生成的原始图片保存到本机文件夹，并提供一键打开文件夹的按钮；
+- 图库支持提示词 / 模型 / 配置 / Seed 搜索、提供商及日期筛选、新旧排序和页码跳转；
+- 独立大图查看器：左右按钮、键盘方向键、手机滑动、邻近缩略图；查看不会覆盖正在编辑的提示词；
 - 按每页 12 张浏览历史，删除单张或跨页选择多张删除；
 - 分开管理 NovelAI / Nano Banana 的风格库，保存预览图、分类、搜索标签及可选负面提示词；
 - 支持 NovelAI Prompt Chunks：`@` 自动补全、拖放、嵌套引用及生成前展开；
+- NovelAI 本地标签助手：内置 140,782 条 Danbooru 标签及别名、后台搜索、俄文入门说明、分类、自定义词典导入、排序与权重按钮；
 - 针对桌面和手机屏幕设计的响应式界面；
 - 启动脚本会自动安装用于代理连接的轻量依赖。
 
@@ -169,13 +172,33 @@ NovelAI 模式额外显示 Chunks 分页。可以把选中的文本保存为 Chu
 
 语法依据 [NovelAI 官方 Prompt Chunks 文档](https://docs.novelai.net/en/image/promptchunks/)。这里的库只存储在本机浏览器，**不会与 NovelAI 账户或官方云端同步**；清除浏览器站点数据也会删除风格、预览图和 Chunks。
 
+## NovelAI 标签助手
+
+NovelAI 模式的提示词面板中新增“提示词助手”。输入英文标签片段（如 `blue ha`）时会显示补全：`↑` / `↓` 选择、`Enter` 插入、`Esc` 关闭。补全仅在 NovelAI 模式生效，可单独关闭，开关会保存在浏览器中。`@` 仍然只用于 Chunks，不会被标签补全接管。
+
+展开助手后，可以按英文标签、别名或俄文说明搜索，也可以选择分类。默认自动加载 140,782 条 Danbooru 标签、147,076 个别名以及分类和使用次数，并保留 208 个独立整理的入门标签及俄文说明；合并后共 140,813 条不重复标签。俄文说明只覆盖入门词库，未翻译全部 Danbooru。默认数据库不是 NovelAI 的官方词表，也不是持续更新的完整 Danbooru；部分词汇包含成人内容，模型不一定支持所有标签。
+
+大词库随项目附带，无需手动导入或连接 Danbooru。仅在首次进入 NovelAI 时启动独立 Web Worker，在后台加载、建立索引和搜索；主线程只接收当前页结果，不会渲染十几万张按钮。先按热度建立索引，查询时不再重排全部匹配项；重复查询使用有上限的缓存，旧查询不会覆盖新查询。每页只显示 12 条结果；点选可添加到主提示词、风格前缀或 NovelAI 负面提示词，不会替换整个输入。已添加的相同标签会标记，未收录的词仍然可以手动输入。词库加载失败时会明确显示警告及重试按钮，并暂时使用入门词库。
+
+“当前字段”以分组显示提示词，点击组后可以用按钮、拖放或 `Shift + ← / →` 调整顺序，也可删除或添加 `{}` / `[]` 权重。Chunks、artist 语法、括号内的逗号和数值权重分组会保留，不会简单按每个逗号拆开。只显示前 60 组以控制界面大小，后续内容不会被删除。数值权重规则请参考 [NovelAI 官方文档](https://docs.novelai.net/en/image/strengthening-weakening/)。保存组合仍然使用现有风格库和 Chunks。
+
+“词典与帮助”中可以导入 JSON / TXT / CSV，最多 25 MB、250,000 条，解析同样在后台进行。支持 [sekiryl/tag-prompt-generator](https://github.com/sekiryl/tag-prompt-generator) 的分类 JSON 格式、对象或字符串数组、逐行 TXT、`tag,count` CSV 及常见 Danbooru CSV；下划线转换为空格，保留说明、别名和热度。自定义词典补充默认词典，重复名称优先使用自定义说明。再次导入会替换上一个自定义词典；导入失败不会清空已有数据。“移除自定义词典”保留 Danbooru、入门词库、提示词、风格及 Chunks。
+
+自定义词典保存在本机 IndexedDB；默认 Danbooru 词库位于 `public/data/danbooru.csv`。标签查询、说明、排序和权重编辑不调用生成 API，也不会向外部服务发送提示词。该功能受 Tag Prompt Generator 的交互方式启发；助手代码和入门词库为本项目独立实现，不包含其代码、词库或 Sortable.js。
+
+Danbooru CSV 来自 [DominikDoom/a1111-sd-webui-tagcomplete](https://github.com/DominikDoom/a1111-sd-webui-tagcomplete/blob/209b1dd76b69e95ba6b1619ea5d13e68446607b7/tags/danbooru.csv) 的固定提交 `209b1dd`（词表文件提交日期：2025-01-03），按原始字节附带，作者及 MIT 授权声明保存在 [DANBOORU-LICENSE.txt](public/data/DANBOORU-LICENSE.txt)。来源、SHA-256、Git Blob SHA 和条目数保存在 `public/data/danbooru.meta.json`。`npm run data:danbooru` 可重新下载并验证这一固定版本，不会自动追踪或信任远程最新版。
+
 ## 图片文件夹与历史管理
 
 新的生成结果会自动以原始图片格式保存到项目目录下的 `generated-images/`，不再需要逐张点击下载。文件名包含生成时间及唯一 ID；不会覆盖已有图片。此目录已加入 `.gitignore`，私人图片不会提交到 GitHub。
 
-在“历史”面板点击“📁 图片文件夹”会打开本机文件管理器。首次使用时，旧版本中仅保存在当前浏览器历史里的图片也会逐张复制到该文件夹；不会删除原有历史或参考图，也不会重复复制已归档的图片。文件夹是在运行 Node.js 服务的电脑上打开的。
+顶部的“图库”导航可直接跳到“图库”面板。在该面板点击“📁 图片文件夹”会打开本机文件管理器。首次使用时，旧版本中仅保存在当前浏览器历史里的图片也会逐张复制到该文件夹；不会删除原有历史或参考图，也不会重复复制已归档的图片。文件夹是在运行 Node.js 服务的电脑上打开的。
 
-历史按每页 12 张显示，只加载当前页的完整图片。每张缩略图的 `×` 可以单独删除记录；点击“选择”后，可以勾选多张、选择当前页，或翻页继续选择，再点击“删除所选”。清空全部历史仍然可用，但放在选择工具栏里，并要求确认。
+历史按每页 12 张显示，支持文字搜索、提供商 / 日期筛选、新旧排序、页码按钮及输入页码直接跳转。缩略图只生成最长边 256px 的小图，使用有上限的内存缓存；不会一次加载全部历史原图。
+
+点击缩略图或结果图片会打开独立大图查看器。可使用两侧按钮、键盘 `←` / `→`、`Home` / `End`、手机横向滑动或邻近缩略图浏览，`Esc` 关闭。浏览范围遵循当前筛选和排序，并跨越图库分页。单纯查看不会修改现有提示词；“使用提示词”按钮才会载入文字和显示结果，也可以直接下载当前图片或加入当前参考图配置。
+
+每张缩略图的 `×` 可以单独删除记录；点击“选择”后，可以勾选多张、选择当前页，或翻页继续选择，再点击“删除所选”。跨页或切换筛选不会清除已有选择，数量始终显示在工具栏。清空全部历史仍然可用，但放在选择工具栏里，并要求确认。
 
 **从历史删除或清空历史，只删除浏览器中的记录。磁盘上的图片文件及参考图库中的副本不会被删除。** 如果要删除文件，请在打开的文件夹中自行操作；已归档的图片被手动移除后，不会因为打开文件夹而自动复活。
 
@@ -207,6 +230,16 @@ image-studio/
 │  ├─ prompt-library.js # 风格库、预览图和 Chunks 界面
 │  ├─ chunk-editor.js   # 输入框内的彩色胶囊与文本编辑
 │  ├─ prompt-tools.js   # Chunks 解析、嵌套与校验
+│  ├─ history-tools.js  # 图库搜索、筛选、排序与分页
+│  ├─ image-viewer.js   # 大图浏览、键盘及触屏导航
+│  ├─ image-thumbnails.js # 有上限的小图缓存
+│  ├─ tag-assistant.js  # NovelAI 标签助手与输入补全
+│  ├─ tag-tools.js      # 标签词典解析及安全分组编辑
+│  ├─ novelai-tags.js   # 独立整理的入门标签与俄文说明
+│  ├─ tag-catalog.js    # Danbooru、入门说明及自定义词典合并
+│  ├─ tag-search-client.js # 有上限缓存的 Worker 通信
+│  ├─ tag-search-worker.js # 后台加载、导入、索引及查询
+│  ├─ data/             # Danbooru CSV、来源元数据及 MIT 声明
 │  └─ novelai.js       # 前后端共用的 NovelAI 参数规则
 ├─ lib/
 │  ├─ novelai-result.mjs # JSON / ZIP 图片响应解析
@@ -218,9 +251,13 @@ image-studio/
 │  ├─ novelai.test.mjs
 │  ├─ image-archive.test.mjs
 │  ├─ prompt-tools.test.mjs
+│  ├─ history-tools.test.mjs
+│  ├─ tag-tools.test.mjs
+│  ├─ tag-catalog.test.mjs
 │  ├─ browser.mjs
 │  └─ smoke.mjs
 ├─ server.mjs          # 静态服务器与 API 代理
+├─ scripts/update-danbooru.mjs # 校验并下载固定版本词库
 ├─ start-local.bat     # Windows 快速启动
 └─ package.json
 ```

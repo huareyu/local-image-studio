@@ -4,6 +4,10 @@ import {
     novelaiReferencesEnabled, novelaiDimensions, normalizeNovelaiReference,
 } from './novelai.js';
 import { createPromptLibrary } from './prompt-library.js';
+import { filterHistory, pageNumbers } from './history-tools.js';
+import { createImageViewer } from './image-viewer.js';
+import { createThumbnailLoader } from './image-thumbnails.js';
+import { createTagAssistant } from './tag-assistant.js';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -76,6 +80,7 @@ const els = {
     resultMeta: $('#result-meta'),
     resultActions: $('#result-actions'),
     downloadResult: $('#download-result'),
+    expandResult: $('#expand-result'),
     resultToReference: $('#result-to-reference'),
     generate: $('#generate'),
     cancel: $('#cancel-generation'),
@@ -94,6 +99,15 @@ const els = {
     historyPrevious: $('#history-previous'),
     historyNext: $('#history-next'),
     historyPageLabel: $('#history-page-label'),
+    historySearch: $('#history-search'),
+    historyProvider: $('#history-provider'),
+    historyDate: $('#history-date'),
+    historyOrder: $('#history-order'),
+    historyCount: $('#history-count'),
+    historyReset: $('#history-reset'),
+    historyEmpty: $('#history-empty'),
+    historyPages: $('#history-pages'),
+    historyPage: $('#history-page'),
     novelaiPanel: $('#novelai-panel'),
     novelaiKeyHint: $('#novelai-key-hint'),
     novelaiModelHint: $('#novelai-model-hint'),
@@ -177,10 +191,20 @@ let novelaiTagPresets = [];
 let novelaiNegativePresets = [];
 const HISTORY_PAGE_SIZE = 12;
 let historyEntries = [];
+let filteredHistoryEntries = [];
 let historyPage = 0;
 let historySelectionMode = false;
 let historyBusy = false;
 const selectedHistoryIds = new Set();
+const readThumbnail = createThumbnailLoader(id => dbGet('history', id));
+const imageViewer = createImageViewer({
+    read: id => dbGet('history', id),
+    readThumbnail,
+    download: downloadEntry,
+    usePrompt: useHistoryEntry,
+    addReference: addResultReference,
+    providerLabel,
+});
 const promptLibrary = createPromptLibrary({
     dbGetAll: () => dbGetAll('promptLibrary'),
     dbSave: records => savePromptLibrary(records),
@@ -198,6 +222,13 @@ const promptLibrary = createPromptLibrary({
     },
     getResult: () => currentResult,
     onTextChanged: () => saveDraftSoon(),
+    showMessage,
+});
+const tagAssistant = createTagAssistant({
+    fields: { prompt: els.prompt, prefix: els.prefix, negative: NOVELAI_FIELDS.novelaiNegativePrompt },
+    getMode: () => els.provider.value,
+    loadDictionary: () => dbGet('promptLibrary', 'novelai-tag-dictionary'),
+    saveDictionary: tags => dbPut('promptLibrary', { id: 'novelai-tag-dictionary', type: 'tagDictionary', tags }),
     showMessage,
 });
 
@@ -382,6 +413,7 @@ function syncProviderFields() {
     els.aspectRatio.closest('label')?.classList.toggle('hidden', provider === 'openai');
     els.openaiSize.closest('label')?.classList.toggle('hidden', provider !== 'openai');
     promptLibrary.syncMode();
+    tagAssistant.syncMode();
 }
 
 function captureNovelaiValues() {
@@ -429,6 +461,7 @@ function syncNovelaiControls({ capture = true } = {}) {
         : refsEnabled ? `${/^nai-diffusion-4-5(?:-|$)/i.test(els.model.value) ? '' : 'Для своего ID отправка экспериментальная. '}До 5 референсов. Каждый увеличивает стоимость; несколько персонажей могут смешиваться.`
             : 'Выключено: картинки и связанные описания не отправляются. Наборы сохранены.';
     updateReferenceCount();
+    tagAssistant.syncMode();
 }
 
 function loadNovelaiNegativePresets() {
@@ -792,6 +825,22 @@ function downloadDataUrl(dataUrl, filename) {
     link.remove();
 }
 
+function downloadEntry(entry) {
+    downloadDataUrl(entry.dataUrl, entry.archive?.fileName || `image-${new Date(entry.createdAt).toISOString().replace(/[:.]/g, '-')}.png`);
+}
+
+async function addResultReference(result) {
+    const entry = {
+        id: crypto.randomUUID(), name: `result-${result.id}.png`, label: (result.prompt || '').slice(0, 80),
+        description: '', dataUrl: result.dataUrl, enabled: true, createdAt: Date.now(),
+    };
+    await dbPut('references', entry);
+    references.unshift(entry);
+    addReferenceToActiveProfile(entry.id);
+    renderReferences();
+    showMessage('Результат добавлен в референсы', 'success');
+}
+
 async function generate() {
     clearMessage();
     saveActiveProfile({ notify: false });
@@ -889,12 +938,11 @@ async function renderHistory() {
     if (!historyEntries.length) historySelectionMode = false;
     const validIds = new Set(historyEntries.map(entry => entry.id));
     for (const id of selectedHistoryIds) if (!validIds.has(id)) selectedHistoryIds.delete(id);
-    historyPage = Math.min(historyPage, Math.max(0, Math.ceil(historyEntries.length / HISTORY_PAGE_SIZE) - 1));
-    paintHistoryPage();
+    applyHistoryFilters();
 }
 
 function syncHistoryControls() {
-    const pages = Math.ceil(historyEntries.length / HISTORY_PAGE_SIZE);
+    const pages = Math.ceil(filteredHistoryEntries.length / HISTORY_PAGE_SIZE);
     els.historySelect.textContent = historySelectionMode ? 'Отмена выбора' : 'Выбрать';
     els.historySelect.disabled = historyBusy || !historyEntries.length;
     els.historySelection.classList.toggle('hidden', !historySelectionMode);
@@ -902,13 +950,35 @@ function syncHistoryControls() {
     els.historyDeleteSelected.textContent = `Удалить выбранные (${selectedHistoryIds.size})`;
     els.historyDeleteSelected.disabled = historyBusy || !selectedHistoryIds.size;
     els.historyDeselect.disabled = historyBusy || !selectedHistoryIds.size;
-    els.historySelectPage.disabled = historyBusy || !historyEntries.length;
+    els.historySelectPage.disabled = historyBusy || !filteredHistoryEntries.length;
     els.clearHistory.disabled = historyBusy || !historyEntries.length;
     els.openImageFolder.disabled = historyBusy;
     els.historyPagination.classList.toggle('hidden', pages <= 1);
-    els.historyPageLabel.textContent = `${historyPage + 1} / ${pages || 1} · ${historyEntries.length} изображений`;
+    els.historyPageLabel.textContent = `${historyPage + 1} / ${pages || 1} · ${filteredHistoryEntries.length} изображений`;
+    els.historyPage.max = String(pages || 1);
+    els.historyPage.value = String(historyPage + 1);
+    els.historyPage.disabled = historyBusy;
     els.historyPrevious.disabled = historyBusy || historyPage === 0;
     els.historyNext.disabled = historyBusy || historyPage + 1 >= pages;
+    els.historyPages.replaceChildren();
+    let previous = -1;
+    for (const page of pageNumbers(historyPage, pages)) {
+        if (page > previous + 1) {
+            const gap = document.createElement('span');
+            gap.textContent = '…';
+            els.historyPages.append(gap);
+        }
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'history-page-number';
+        button.textContent = String(page + 1);
+        button.setAttribute('aria-label', `Страница ${page + 1}`);
+        if (page === historyPage) button.setAttribute('aria-current', 'page');
+        button.disabled = historyBusy;
+        button.addEventListener('click', () => goToHistoryPage(page));
+        els.historyPages.append(button);
+        previous = page;
+    }
     for (const card of els.historyList.children) {
         const selected = selectedHistoryIds.has(card.dataset.id);
         card.classList.toggle('selected', selected);
@@ -928,26 +998,43 @@ function toggleHistorySelection(id) {
     syncHistoryControls();
 }
 
-async function activateHistoryEntry(id) {
-    try {
-        const entry = await dbGet('history', id);
-        if (!entry) return await renderHistory();
-        displayResult(entry);
-        els.prompt.value = entry.resolvedPrompt ?? entry.prompt ?? '';
-        els.prefix.value = entry.resolvedPrefix ?? entry.prefix ?? '';
-        if (els.provider.value === 'novelai') {
-            NOVELAI_FIELDS.novelaiNegativePrompt.value = entry.negativePrompt || '';
-            novelaiValues.novelaiNegativePrompt = entry.negativePrompt || '';
-        } else els.negativePrompt.value = entry.negativePrompt || '';
-        saveDraftSoon();
-        promptLibrary.textChanged();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch (error) { showMessage(error.message || String(error)); }
+function useHistoryEntry(entry) {
+    if (!generationController) displayResult(entry);
+    els.prompt.value = entry.resolvedPrompt ?? entry.prompt ?? '';
+    els.prefix.value = entry.resolvedPrefix ?? entry.prefix ?? '';
+    if (els.provider.value === 'novelai') {
+        NOVELAI_FIELDS.novelaiNegativePrompt.value = entry.negativePrompt || '';
+        novelaiValues.novelaiNegativePrompt = entry.negativePrompt || '';
+    } else els.negativePrompt.value = entry.negativePrompt || '';
+    saveDraftSoon();
+    promptLibrary.textChanged();
+    els.prompt.closest('.panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function applyHistoryFilters({ resetPage = false } = {}) {
+    filteredHistoryEntries = filterHistory(historyEntries, {
+        search: els.historySearch.value, provider: els.historyProvider.value,
+        date: els.historyDate.value, order: els.historyOrder.value,
+    });
+    if (resetPage) historyPage = 0;
+    historyPage = Math.max(0, Math.min(historyPage, Math.ceil(filteredHistoryEntries.length / HISTORY_PAGE_SIZE) - 1));
+    const filtered = Boolean(els.historySearch.value || els.historyProvider.value || els.historyDate.value || els.historyOrder.value !== 'newest');
+    els.historyReset.classList.toggle('hidden', !filtered);
+    els.historyCount.textContent = filtered ? `Найдено: ${filteredHistoryEntries.length} из ${historyEntries.length}` : `Всего: ${historyEntries.length}`;
+    els.historyEmpty.textContent = historyEntries.length ? 'Ничего не найдено. Попробуй другой запрос или сбрось фильтры.' : 'История пуста. Здесь появятся твои генерации.';
+    els.historyEmpty.classList.toggle('hidden', filteredHistoryEntries.length > 0);
+    paintHistoryPage();
+}
+
+function goToHistoryPage(page) {
+    if (historyBusy || !Number.isFinite(page)) return;
+    historyPage = Math.max(0, Math.min(Math.trunc(page), Math.ceil(filteredHistoryEntries.length / HISTORY_PAGE_SIZE) - 1));
+    paintHistoryPage();
 }
 
 function paintHistoryPage() {
     els.historyList.innerHTML = '';
-    for (const entry of historyEntries.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE)) {
+    for (const entry of filteredHistoryEntries.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE)) {
         const card = document.createElement('article');
         card.className = 'history-item';
         card.dataset.id = entry.id;
@@ -961,11 +1048,15 @@ function paintHistoryPage() {
         image.loading = 'lazy';
         const label = document.createElement('span');
         label.className = 'history-caption';
-        label.textContent = entry.model || entry.profileName || 'image';
+        const captionTitle = document.createElement('strong');
+        captionTitle.textContent = entry.prompt || entry.model || 'Изображение';
+        const captionMeta = document.createElement('span');
+        captionMeta.textContent = `${new Date(entry.createdAt).toLocaleDateString('ru-RU')} · ${entry.model || entry.profileName || 'image'}`;
+        label.append(captionTitle, captionMeta);
         button.append(image, label);
         button.addEventListener('click', () => {
             if (historySelectionMode) toggleHistorySelection(entry.id);
-            else activateHistoryEntry(entry.id);
+            else imageViewer.open(entry.id, filteredHistoryEntries);
         });
         const checkboxLabel = document.createElement('label');
         checkboxLabel.className = 'history-checkbox';
@@ -983,8 +1074,8 @@ function paintHistoryPage() {
         remove.addEventListener('click', () => deleteHistoryEntries([entry.id]));
         card.append(button, checkboxLabel, remove);
         els.historyList.append(card);
-        dbGet('history', entry.id).then(full => {
-            if (full && image.isConnected) image.src = full.dataUrl;
+        readThumbnail(entry.id, () => image.isConnected).then(dataUrl => {
+            if (dataUrl && image.isConnected) image.src = dataUrl;
         }).catch(() => { image.alt = 'Не удалось загрузить изображение'; });
     }
     syncHistoryControls();
@@ -1279,6 +1370,7 @@ function bindEvents() {
     els.generate.addEventListener('click', generate);
     els.cancel.addEventListener('click', () => generationController?.abort());
     document.addEventListener('keydown', event => {
+        if (imageViewer.isOpen) return;
         if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
             event.preventDefault();
             if (!els.generate.disabled) generate();
@@ -1286,24 +1378,17 @@ function bindEvents() {
     });
     els.downloadResult.addEventListener('click', () => {
         if (!currentResult) return;
-        downloadDataUrl(currentResult.dataUrl, currentResult.archive?.fileName || `image-${new Date(currentResult.createdAt).toISOString().replace(/[:.]/g, '-')}.png`);
+        downloadEntry(currentResult);
     });
+    const expandResult = () => {
+        if (currentResult) imageViewer.open(currentResult.id, filteredHistoryEntries.some(entry => entry.id === currentResult.id) ? filteredHistoryEntries : [currentResult]);
+    };
+    els.expandResult.addEventListener('click', expandResult);
+    els.resultImage.addEventListener('click', expandResult);
     els.resultToReference.addEventListener('click', async () => {
         if (!currentResult) return;
-        const entry = {
-            id: crypto.randomUUID(),
-            name: `result-${currentResult.id}.png`,
-            label: currentResult.prompt.slice(0, 80),
-            description: '',
-            dataUrl: currentResult.dataUrl,
-            enabled: true,
-            createdAt: Date.now(),
-        };
-        await dbPut('references', entry);
-        references.unshift(entry);
-        addReferenceToActiveProfile(entry.id);
-        renderReferences();
-        showMessage('Результат добавлен в референсы', 'success');
+        try { await addResultReference(currentResult); }
+        catch (error) { showMessage(error.message); }
     });
     els.openImageFolder.addEventListener('click', openImageFolder);
     els.historySelect.addEventListener('click', () => {
@@ -1313,14 +1398,24 @@ function bindEvents() {
         syncHistoryControls();
     });
     els.historySelectPage.addEventListener('click', () => {
-        for (const entry of historyEntries.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE)) selectedHistoryIds.add(entry.id);
+        for (const entry of filteredHistoryEntries.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE)) selectedHistoryIds.add(entry.id);
         syncHistoryControls();
     });
     els.historyDeselect.addEventListener('click', () => { selectedHistoryIds.clear(); syncHistoryControls(); });
     els.historyDeleteSelected.addEventListener('click', () => deleteHistoryEntries([...selectedHistoryIds]));
     els.clearHistory.addEventListener('click', () => deleteHistoryEntries(historyEntries.map(entry => entry.id), { all: true }));
-    els.historyPrevious.addEventListener('click', () => { historyPage--; paintHistoryPage(); });
-    els.historyNext.addEventListener('click', () => { historyPage++; paintHistoryPage(); });
+    els.historyPrevious.addEventListener('click', () => goToHistoryPage(historyPage - 1));
+    els.historyNext.addEventListener('click', () => goToHistoryPage(historyPage + 1));
+    els.historySearch.addEventListener('input', () => applyHistoryFilters({ resetPage: true }));
+    for (const field of [els.historyProvider, els.historyDate, els.historyOrder]) field.addEventListener('change', () => applyHistoryFilters({ resetPage: true }));
+    const jumpPage = () => goToHistoryPage(Number(els.historyPage.value) - 1);
+    els.historyPage.addEventListener('change', jumpPage);
+    els.historyPage.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); jumpPage(); } });
+    els.historyReset.addEventListener('click', () => {
+        for (const field of [els.historySearch, els.historyProvider, els.historyDate]) field.value = '';
+        els.historyOrder.value = 'newest';
+        applyHistoryFilters({ resetPage: true });
+    });
 }
 
 async function init() {
@@ -1337,7 +1432,7 @@ async function init() {
     loadDraft();
     bindEvents();
     try {
-        await Promise.all([loadReferences(), renderHistory(), promptLibrary.init()]);
+        await Promise.all([loadReferences(), renderHistory(), promptLibrary.init(), tagAssistant.init()]);
     } catch (error) {
         showMessage(`Не удалось открыть локальную базу: ${error.message}`);
     }
