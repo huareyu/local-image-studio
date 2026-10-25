@@ -549,11 +549,13 @@ body.viewer-open { overflow: hidden; }
 .artist-layout .section-heading .text-button { flex-shrink: 0; font-size: 11px; }
 .artist-drop { width: 100%; display: grid; place-items: center; min-height: 240px; padding: 14px; overflow: hidden; border: 1px dashed rgba(185,129,255,.38); border-radius: 14px; background: var(--field); color: var(--accent); }
 .artist-drop.dragging, .artist-drop:hover { border-color: var(--accent-strong); background: var(--accent-soft); }
-#artist-empty { display: grid; gap: 12px; max-width: 310px; padding: 30px 10px; }
-#artist-empty strong { font-size: 15px; }
-#artist-empty small { color: var(--muted); font-size: 12px; line-height: 1.6; }
-#artist-preview { display: block; max-height: 380px; max-width: 100%; object-fit: contain; border-radius: 8px; }
-#artist-caption { margin: 8px 0 12px; overflow-wrap: anywhere; }
+#artist-empty, #tagger-empty { display: grid; gap: 12px; max-width: 310px; padding: 30px 10px; }
+#artist-empty strong, #tagger-empty strong { font-size: 15px; }
+#artist-empty small, #tagger-empty small { color: var(--muted); font-size: 12px; line-height: 1.6; }
+#artist-preview, #tagger-preview { display: block; max-height: 380px; max-width: 100%; object-fit: contain; border-radius: 8px; }
+#artist-caption, #tagger-caption { margin: 8px 0 12px; overflow-wrap: anywhere; }
+#tagger-general, #tagger-character { height: 30px; padding: 0; accent-color: var(--accent-strong); }
+#tagger-general-value, #tagger-character-value { float: right; color: var(--accent); }
 #artist-top-k { height: 30px; padding: 0; accent-color: var(--accent-strong); }
 #artist-top-k-value { float: right; color: var(--accent); }
 .artist-privacy { padding: 12px; margin-top: 18px; border: 1px solid rgba(185,129,255,.28); border-radius: 12px; background: var(--accent-soft); }
@@ -582,6 +584,17 @@ body.viewer-open { overflow: hidden; }
 .artist-selection-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--accent); }
 #artist-tags { font-size: 12px; }
 .artist-credit { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+.tagger-group-title { margin: 22px 0 12px; font-size: 13px; }
+.tagger-tags { display: flex; flex-wrap: wrap; align-content: start; gap: 8px; max-height: 440px; overflow-y: auto; overscroll-behavior: contain; padding: 3px; }
+.tagger-chip { display: inline-flex; gap: 8px; align-items: center; max-width: 100%; min-height: 36px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 20px; background: var(--field); color: var(--muted); font-size: 12px; text-align: left; }
+.tagger-chip span { min-width: 0; overflow-wrap: anywhere; }
+.tagger-chip small { flex-shrink: 0; font-size: 10px; opacity: .8; font-variant-numeric: tabular-nums; }
+.tagger-chip[aria-pressed="true"] { color: #dfcbff; border-color: #ac7ce66b; background: #a46be527; }
+.tagger-chip.character[aria-pressed="true"] { color: #9de9cd; border-color: #56d5ac70; background: #56d5ac20; }
+.tagger-chip:hover, .tagger-chip:focus-visible { border-color: var(--accent); }
+.tagger-character-box { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.tagger-character-box summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+#tagger-tags { font-size: 13px; }
 
 @media (max-width: 1050px) {
     .workspace { grid-template-columns: minmax(0, 1fr); width: min(760px, calc(100% - 28px)); }
@@ -592,9 +605,13 @@ body.viewer-open { overflow: hidden; }
 }
 
 @media (max-width: 600px) {
-    .topbar { min-height: 66px; padding: 10px 14px; }
+    .topbar { min-height: 66px; padding: 10px 14px; flex-wrap: wrap; gap: 10px; }
     .server-pill { font-size: 0; padding: 9px; }
-    .topbar-actions { gap: 0; }
+    .topbar-actions { gap: 0; width: 100%; }
+    .workspace-nav { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+    .controls .panel { scroll-margin-top: 125px; }
+    .tagger-tags { max-height: 330px; }
+    .tagger-chip { min-height: 42px; }
     .topbar-actions .server-pill { display: none; }
     .brand p { display: none; }
     .brand { gap: 8px; }

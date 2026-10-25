@@ -16,7 +16,7 @@
                 <p>локальная генерация с референсами</p>
             </div>
         </div>
-        <div class="topbar-actions"><nav class="workspace-nav" aria-label="Разделы"><a id="nav-studio" href="#prompt-panel">Создать</a><a id="nav-gallery" href="#history-gallery">Галерея</a><button id="nav-artists" type="button" aria-pressed="false" aria-controls="artist-page">Художники</button></nav><div class="server-pill"><span></span> работает локально</div></div>
+        <div class="topbar-actions"><nav class="workspace-nav" aria-label="Разделы"><a id="nav-studio" href="#prompt-panel">Создать</a><a id="nav-gallery" href="#history-gallery">Галерея</a><button id="nav-artists" type="button" aria-pressed="false" aria-controls="artist-page">Художники</button><button id="nav-tagger" type="button" aria-pressed="false" aria-controls="tagger-page">Картинка → промпт</button></nav><div class="server-pill"><span></span> работает локально</div></div>
     </header>
 
     <main id="studio-workspace" class="workspace">
@@ -474,6 +474,58 @@
                     <p class="hint">В студии теги дописываются к текущему префиксу — сцена, негатив и выбранные референсы не меняются. Вес можно настроить отдельно. Изображение и результаты этой вкладки не сохраняются в историю.</p>
                 </div>
                 <p class="hint artist-credit">Интеграция с <a href="https://huggingface.co/spaces/DraconicDragon/Kaloscope-artist-style-classifier" target="_blank" rel="noopener noreferrer">Kaloscope Space · DraconicDragon</a>; оригинальные модели — <a href="https://huggingface.co/heathcliff01" target="_blank" rel="noopener noreferrer">heathcliff01</a>. Модели не скачиваются на твой компьютер.</p>
+            </section>
+        </div>
+    </main>
+
+    <main id="tagger-page" class="artist-page hidden">
+        <header class="artist-intro">
+            <span class="eyebrow">WD / PixAI · разбор изображения</span>
+            <h1>Картинка → промпт</h1>
+            <p>Разбери арт на теги для NovelAI: внешность, одежда, поза, предметы и фон. Оставь нужные капсулки и перенеси результат в свой промпт.</p>
+        </header>
+        <div class="artist-layout">
+            <section class="panel" aria-label="Картинка для разбора на теги">
+                <div class="section-heading"><h2>Исходная картинка</h2><button id="tagger-clear" class="text-button" type="button">Очистить</button></div>
+                <input id="tagger-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+                <button id="tagger-drop" class="artist-drop" type="button" aria-label="Загрузить картинку для разбора на теги">
+                    <img id="tagger-preview" class="hidden" alt="Локальное превью картинки для теггера">
+                    <span id="tagger-empty"><strong>＋ Добавить картинку</strong><small>Нажми, перетащи файл или вставь из буфера · PNG / JPEG / WebP</small></span>
+                </button>
+                <p id="tagger-caption" class="hint"></p>
+                <button id="tagger-current" class="secondary-button" type="button" disabled>Взять картинку с холста</button>
+                <label><span>Теггер</span><select id="tagger-service"><option value="wd">WD Tagger · SmilingWolf</option><option value="pixai">PixAI Tagger · v0.9</option></select></label>
+                <label id="tagger-model-field"><span>Модель WD</span><select id="tagger-model"></select></label>
+                <div class="form-grid two">
+                    <label><span>Порог тегов <output id="tagger-general-value">0.35</output></span><input id="tagger-general" type="range" min="0" max="1" step="0.05" value="0.35"></label>
+                    <label><span>Порог персонажей <output id="tagger-character-value">0.85</output></span><input id="tagger-character" type="range" min="0" max="1" step="0.05" value="0.85"></label>
+                </div>
+                <p class="hint">Выше порог — меньше сомнительных тегов. Ниже — больше деталей, но и больше ошибок. WD по умолчанию: EVA02 Large v3. У PixAI более новые теги, но это не гарантия большей точности.</p>
+                <label class="check-row"><input id="tagger-proxy" type="checkbox"><span>Использовать прокси активного подключения</span></label>
+                <div class="artist-privacy">
+                    <label class="check-row"><input id="tagger-consent" type="checkbox"><span>Разрешаю отправить эту картинку в выбранный теггер / Hugging Face</span></label>
+                    <p class="hint">До нажатия кнопки картинка остаётся в браузере. Отправляется JPEG-копия до 1024px без исходных метаданных и имени файла. Ключи генерации, промпты и референсы не передаются. Загрузка может сохраняться на внешнем сервисе по его правилам.</p>
+                </div>
+                <div class="artist-run-actions"><button id="tagger-run" class="secondary-button artist-run" type="button" disabled>✦ Разобрать на теги</button><button id="tagger-cancel" class="text-button danger-text hidden" type="button">Прервать ожидание</button></div>
+                <p id="tagger-status" class="artist-status" role="status" aria-live="polite">Выбери картинку для разбора.</p>
+                <p class="hint">Возможны очередь, сон Space и ограничения запросов. Прерывание останавливает ожидание, но не гарантирует отмену удалённой задачи или удаления загрузки.</p>
+            </section>
+            <section class="panel" aria-label="Распознанные теги">
+                <div class="section-heading"><h2>Теги картинки</h2><a id="tagger-service-link" class="text-button" href="https://huggingface.co/spaces/SmilingWolf/wd-tagger" target="_blank" rel="noopener noreferrer">Открыть WD Tagger ↗</a></div>
+                <div id="tagger-empty-results" class="artist-empty-results"><span>✧</span><h3>Здесь появятся теги</h3><p>Это описание видимого на картинке, а не восстановление исходного промпта, весов или seed.</p></div>
+                <div id="tagger-result-box" class="hidden">
+                    <p class="hint">Нажми на капсулку, чтобы убрать или вернуть тег. Проценты — уверенность модели; спорные детали лучше проверить.</p>
+                    <div class="artist-selection-bar"><span id="tagger-selection">Выбрано: 0</span><button id="tagger-select-all" class="text-button" type="button">Выбрать все</button><button id="tagger-select-none" class="text-button" type="button">Снять выбор</button></div>
+                    <h3 class="tagger-group-title">Внешность, одежда и сцена</h3>
+                    <div id="tagger-general-tags" class="tagger-tags" aria-label="Общие теги"></div>
+                    <details id="tagger-character-box" class="tagger-character-box"><summary>Возможные персонажи · не выбраны автоматически</summary><p class="hint">Это предположения о знакомых персонажах, не определение личности.</p><div id="tagger-character-tags" class="tagger-tags" aria-label="Предполагаемые персонажи"></div></details>
+                    <label><span>Формат</span><select id="tagger-format"><option value="underscores">NovelAI / Danbooru · long_hair</option><option value="spaces">Теги с пробелами · long hair</option></select></label>
+                    <label><span>Итоговый текст · можно редактировать</span><textarea id="tagger-tags" rows="6" spellcheck="false"></textarea></label>
+                    <p class="hint">Можешь дописать или исправить текст вручную. Изменение капсулок или формата пересобирает это поле.</p>
+                    <div class="artist-run-actions"><button id="tagger-copy" class="secondary-button" type="button" disabled>Скопировать</button><button id="tagger-use" class="secondary-button" type="button" disabled>＋ В промпт</button><button id="tagger-use-prefix" class="secondary-button" type="button" disabled>＋ В стиль</button></div>
+                    <p class="hint">Текст дописывается к выбранному полю без замены текущего. Генерация не запускается; негатив, настройки и референсы не меняются. Картинка и результаты не сохраняются в историю.</p>
+                </div>
+                <p class="hint artist-credit">Модели и демо: <a href="https://huggingface.co/spaces/SmilingWolf/wd-tagger" target="_blank" rel="noopener noreferrer">SmilingWolf / WD Tagger</a>, <a href="https://huggingface.co/pixai-labs/pixai-tagger-v0.9" target="_blank" rel="noopener noreferrer">PixAI Labs</a>, <a href="https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx" target="_blank" rel="noopener noreferrer">DeepGHS · ONNX</a> и <a href="https://huggingface.co/spaces/DraconicDragon/PixAI-Tagger-v0.9-ONNX" target="_blank" rel="noopener noreferrer">DraconicDragon · PixAI Space</a>. Модели не скачиваются на твой компьютер.</p>
             </section>
         </div>
     </main>

@@ -2,7 +2,7 @@
 
 一个运行在本机的轻量级 AI 图像生成工作台。它提供连接配置、多参考图管理、提示词编辑和本地生成历史，不依赖 SillyTavern，也不需要安装前端框架。
 
-> 当前版本：`0.9.0`<br>
+> 当前版本：`0.10.0`<br>
 > 界面语言：俄语<br>
 > 运行环境：Node.js 20 或更高版本
 
@@ -30,6 +30,7 @@
 - 支持 NovelAI Prompt Chunks：`@` 自动补全、拖放、嵌套引用及生成前展开；
 - NovelAI 本地标签助手：内置 140,782 条 Danbooru 标签及别名、后台搜索、俄文入门说明、分类、自定义词典导入、排序与权重按钮；
 - 独立“画师”分页：接入 Kaloscope 图片画风分类，选择 1–25 个结果、查看 Danbooru 链接、复制标签或追加到风格前缀；
+- 独立“图片 → 提示词”分页：WD / PixAI 图片标签识别、置信度阈值、可选择的彩色标签胶囊、文本编辑、复制及追加到提示词或风格；
 - 针对桌面和手机屏幕设计的响应式界面；
 - 启动脚本会自动安装用于代理连接的轻量依赖。
 
@@ -207,6 +208,25 @@ Danbooru CSV 来自 [DominikDoom/a1111-sd-webui-tagcomplete](https://github.com/
 
 集成依据 Space 的公开 [API 源码](https://huggingface.co/spaces/DraconicDragon/Kaloscope-artist-style-classifier/blob/main/app.py) 和 Gradio 上传 / 队列接口独立实现，不下载或打包模型权重。感谢 DraconicDragon 的 Space、heathcliff01 的原始 Kaloscope 模型及其贡献者。
 
+## 图片 → 提示词：WD / PixAI
+
+顶部的 `Картинка → промпт` 打开独立分页。上传 PNG / JPEG / WebP、拖放、粘贴，或从生成画布取图；浏览器先在本地将图片缩小到最长边 1024px，并重新编码为 JPEG，去除原始文件名和元数据。每次换图或切换服务都要重新勾选同意；只有点击“分析为标签”才上传，不会自动生成图片或加入参考图库。
+
+支持两种在线服务：
+
+- [WD Tagger / SmilingWolf](https://huggingface.co/spaces/SmilingWolf/wd-tagger)：默认 EVA02 Large v3，也可选择 SwinV2、ConvNeXt、ViT 和 ViT Large v3；一般标签阈值默认 `0.35`，角色阈值 `0.85`。
+- [PixAI Tagger v0.9 / DraconicDragon Space](https://huggingface.co/spaces/DraconicDragon/PixAI-Tagger-v0.9-ONNX)：一般标签阈值默认 `0.30`，角色阈值 `0.75`。数据更新并不代表所有场景都更准确。
+
+一般标签默认选中；推测的作品角色放在单独的折叠区，默认不选，以免把错误角色名加进提示词。点击彩色胶囊可取消或恢复选择，显示的百分比只是模型置信度。可切换 `long_hair` / `long hair` 格式并编辑最终文本；重新选择胶囊或切换格式会重新生成文本框内容。
+
+“复制”仅复制文本；“追加到提示词 / 风格”仅补充目标字段，不替换已有内容，不改变负面提示词、生成连接或参考图，不自动开始生成。已存在的普通逗号分隔标签不会重复追加。该功能只描述图片中可见内容，不能恢复原始 prompt、权重、seed 或证明画师身份。
+
+处理通过本机 Node 服务调用外部 Hugging Face Space，不需要额外填写 HF Token，也不会传递图片生成 API 密钥、当前提示词、其他参考图或原始本地文件名。上传图片、结果及同意状态不持久保存；刷新即清空，仅服务、模型、格式及各服务的阈值保存在本地。可以显式使用当前连接的 HTTP/HTTPS 代理，未配置代理则提示，不自动回退为直连。
+
+公共 Space 可能休眠、排队、限流或保留上传文件；最多等待三分钟，不自动重试。“中断等待”只停止本地等待，不保证取消远程任务或删除远程上传。高级用户可通过服务端环境变量 `IMAGE_STUDIO_WD_ENDPOINT` / `IMAGE_STUDIO_PIXAI_ENDPOINT` 指向自己的兼容副本；网页不能提供任意目标 URL。
+
+感谢 [SmilingWolf](https://huggingface.co/SmilingWolf)、[PixAI Labs](https://huggingface.co/pixai-labs/pixai-tagger-v0.9)、[DeepGHS 的 ONNX 转换](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx) 和 [DraconicDragon](https://huggingface.co/DraconicDragon)。依据公开 API 独立实现，未打包或下载模型权重。
+
 ## 图片文件夹与历史管理
 
 新的生成结果会自动以原始图片格式保存到项目目录下的 `generated-images/`，不再需要逐张点击下载。文件名包含生成时间及唯一 ID；不会覆盖已有图片。此目录已加入 `.gitignore`，私人图片不会提交到 GitHub。
@@ -234,6 +254,7 @@ Danbooru CSV 来自 [DominikDoom/a1111-sd-webui-tagcomplete](https://github.com/
 - 图片文件另存到本机的 `generated-images/`，与浏览器记录分开保留；
 - API 密钥只会从浏览器发送到本机 Node.js 服务，再由本机服务发送到所配置的 Endpoint；
 - Kaloscope 分页是明确同意后才上传的外部画风分类服务，不属于离线识别；
+- WD / PixAI 同样是手动同意后上传的在线标签识别服务，不会转发生成 API 的密钥；
 - 项目不会把密钥写入源码、日志或 Git 仓库；
 - 请仅使用你信任的 Endpoint。
 
@@ -261,12 +282,17 @@ image-studio/
 │  ├─ tag-search-worker.js # 后台加载、导入、索引及查询
 │  ├─ artist-classifier.js # 独立画师分页、上传确认及标签使用
 │  ├─ artist-tools.js    # Kaloscope 模型列表、画师标签及安全链接
+│  ├─ analysis-image.js  # 分析工具共用的本地缩图与元数据移除
+│  ├─ image-tagger.js   # 独立图片标签分页、确认、胶囊和文本编辑
+│  ├─ image-tagger-tools.js # 服务、模型、标签格式与安全追加
 │  ├─ data/             # Danbooru CSV、来源元数据及 MIT 声明
 │  └─ novelai.js       # 前后端共用的 NovelAI 参数规则
 ├─ lib/
 │  ├─ novelai-result.mjs # JSON / ZIP 图片响应解析
 │  ├─ image-archive.mjs  # 原始图片归档及打开本机文件夹
-│  └─ artist-classifier.mjs # Kaloscope 上传、Gradio 队列及结果解析
+│  ├─ artist-classifier.mjs # Kaloscope 上传、Gradio 队列及结果解析
+│  ├─ gradio.mjs         # 有大小限制的上传与 SSE 解析
+│  └─ image-tagger.mjs   # WD / PixAI 参数与结果验证
 ├─ generated-images/   # 私人生成图片（已被 Git 忽略）
 ├─ tests/
 │  ├─ mock-provider.mjs
@@ -278,11 +304,13 @@ image-studio/
 │  ├─ tag-tools.test.mjs
 │  ├─ tag-catalog.test.mjs
 │  ├─ artist-classifier.test.mjs
+│  ├─ image-tagger.test.mjs
 │  ├─ browser.mjs
 │  └─ smoke.mjs
 ├─ server.mjs          # 静态服务器与 API 代理
 ├─ scripts/update-danbooru.mjs # 校验并下载固定版本词库
 ├─ scripts/check-kaloscope.mjs # 显式联网检查（只创建并上传人工渐变测试图）
+├─ scripts/check-image-tagger.mjs # WD / PixAI 显式联网检查（只上传人工测试图）
 ├─ start-local.bat     # Windows 快速启动
 └─ package.json
 ```
@@ -290,6 +318,8 @@ image-studio/
 ## 测试
 
 `npm test` 与浏览器测试仅使用本地模拟服务，不会上传私人图片或调用真实付费生成。若要显式检查 Kaloscope 公共 Space，可运行 `node scripts/check-kaloscope.mjs`；它会自行生成并上传一张 128×128 的渐变测试图，不读取本机图片或密钥。
+
+WD / PixAI 的同类联网检查：`node scripts/check-image-tagger.mjs`；也可在命令末尾添加 `wd` 或 `pixai` 只检查一个服务。这些命令会真实上传脚本生成的渐变测试图。
 
 无需真实 API 密钥即可运行本地 smoke test：
 

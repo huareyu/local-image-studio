@@ -8,6 +8,7 @@ import { NOVELAI_ENDPOINT, NOVELAI_MODELS, buildNovelaiRequest } from './public/
 import { decodeNovelaiResult } from './lib/novelai-result.mjs';
 import { createImageArchive } from './lib/image-archive.mjs';
 import { classifyArtistImage } from './lib/artist-classifier.mjs';
+import { tagImage } from './lib/image-tagger.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -506,6 +507,29 @@ async function handleOpenImageFolder(req, res) {
     catch (error) { throw new HttpError(500, 'Не удалось открыть папку изображений', `${imageArchive.folderPath}\n${error.message}`); }
 }
 
+async function handleImageTagging(req, res) {
+    requireLocalImageAction(req);
+    const body = await readJson(req, 12 * 1024 * 1024);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Нужен объект с параметрами анализа');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('Tagger timeout')), 180000);
+    const closed = () => { if (!res.writableEnded) controller.abort(new Error('Client disconnected')); };
+    res.once('close', closed);
+    try {
+        const proxy = body.proxy || {};
+        const result = await tagImage(body, { signal: controller.signal,
+            endpoint: body.service === 'pixai' ? process.env.IMAGE_STUDIO_PIXAI_ENDPOINT : process.env.IMAGE_STUDIO_WD_ENDPOINT,
+            dispatcher: proxyDispatcher({ proxyEnabled: proxy.proxyEnabled === true, proxyUrl: proxy.proxyUrl,
+                proxyUsername: proxy.proxyUsername, proxyPassword: proxy.proxyPassword }) });
+        if (!res.destroyed) sendJson(res, 200, result);
+    } catch (error) {
+        if (res.destroyed) return;
+        if (controller.signal.aborted) throw new HttpError(504, 'Не дождались ответа теггера. Space может загружать модель или стоять в очереди.');
+        if (error.status) throw error;
+        throw new HttpError(502, 'Не удалось подключиться к теггеру. Проверь интернет, VPN или прокси.');
+    } finally { clearTimeout(timeout); res.off('close', closed); }
+}
+
 async function handleModels(req, res) {
     const body = await readJson(req);
     const profile = body.profile || {};
@@ -563,6 +587,7 @@ const server = http.createServer(async (req, res) => {
         if (req.method === 'POST' && req.url === '/api/images/archive') return await handleArchiveImage(req, res);
         if (req.method === 'POST' && req.url === '/api/images/open-folder') return await handleOpenImageFolder(req, res);
         if (req.method === 'POST' && req.url === '/api/artists/classify') return await handleArtistClassification(req, res);
+        if (req.method === 'POST' && req.url === '/api/images/tag') return await handleImageTagging(req, res);
         if (req.method === 'GET') return await serveStatic(req, res);
         throw new HttpError(405, 'Method not allowed');
     } catch (error) {

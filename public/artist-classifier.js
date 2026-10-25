@@ -1,4 +1,5 @@
 import { KALOSCOPE_MODELS, validArtistName, artistDanbooruUrl, artistPromptTags } from './artist-tools.js';
+import { prepareAnalysisImage as prepareImage } from './analysis-image.js';
 
 const SETTINGS_KEY = 'image-studio.artist-classifier.v1';
 const element = (tag, className, text) => {
@@ -6,24 +7,6 @@ const element = (tag, className, text) => {
     if (text != null) node.textContent = text;
     return node;
 };
-
-async function prepareImage(source) {
-    if (typeof source === 'string' && (!/^data:image\/(?:png|jpeg|webp);base64,/.test(source) || source.length > 42 * 1024 * 1024)) throw new Error('Нужна локальная растровая картинка до 30 МБ');
-    const file = typeof source === 'string' ? await fetch(source).then(response => response.blob()) : source;
-    if (!file || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('Выбери PNG, JPEG или WebP');
-    if (file.size > 30 * 1024 * 1024) throw new Error('Исходная картинка должна быть не больше 30 МБ');
-    const bitmap = await createImageBitmap(file);
-    try {
-        if (bitmap.width * bitmap.height > 60000000) throw new Error('Картинка слишком большая по размерам');
-        const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(bitmap.width * scale)); canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-        const context = canvas.getContext('2d');
-        context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-        return { dataUrl: canvas.toDataURL('image/jpeg', .94), width: canvas.width, height: canvas.height };
-    } finally { bitmap.close(); }
-}
 
 export function createArtistClassifier({ getResult, getMode, getProxy, useTags }) {
     const ui = Object.fromEntries(['page', 'upload', 'drop', 'preview', 'empty', 'caption', 'current', 'clear', 'model', 'top-k',
@@ -58,6 +41,8 @@ export function createArtistClassifier({ getResult, getMode, getProxy, useTags }
         nav.setAttribute('aria-pressed', 'false');
     }
     function showArtists() {
+        document.getElementById('tagger-page').classList.add('hidden');
+        document.getElementById('nav-tagger').setAttribute('aria-pressed', 'false');
         studio.classList.add('hidden'); ui.page.classList.remove('hidden');
         nav.setAttribute('aria-pressed', 'true');
         if (!formatChosen) ui.format.value = getMode() === 'novelai' ? 'novelai' : 'plain';

@@ -6,6 +6,8 @@ const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+M/wH
 const novelaiRequests = [];
 const artistRequests = [];
 const artistJobs = new Map();
+const taggerRequests = [];
+const taggerJobs = new Map();
 
 async function readBody(req) {
     const chunks = [];
@@ -22,6 +24,32 @@ http.createServer(async (req, res) => {
     const body = await readBody(req);
     if (req.url === '/__novelai-requests') return json(res, novelaiRequests);
     if (req.url === '/__artist-requests') return json(res, artistRequests);
+    if (req.url === '/__tagger-requests') return json(res, taggerRequests);
+    if (/^\/(wd|pixai)\/gradio_api\/upload$/.test(req.url)) {
+        taggerRequests.push({ type: 'upload', service: req.url.split('/')[1], authorization: req.headers.authorization || '', body: body.toString('latin1') });
+        return json(res, ['/tmp/gradio/mock/reference.jpg']);
+    }
+    if (/^\/(wd|pixai)\/gradio_api\/call\/(predict|run_inference)$/.test(req.url)) {
+        const payload = JSON.parse(body.toString()); const service = req.url.split('/')[1];
+        taggerRequests.push({ type: 'predict', service, authorization: req.headers.authorization || '', payload });
+        const id = `tagger-job-${taggerJobs.size}`; taggerJobs.set(id, { service, payload });
+        return json(res, { event_id: id });
+    }
+    if (/^\/(wd|pixai)\/gradio_api\/call\/(predict|run_inference)\//.test(req.url)) {
+        const job = taggerJobs.get(req.url.split('/').at(-1));
+        const threshold = job?.payload?.data?.[job.service === 'wd' ? 2 : 1];
+        const general = { label: '1girl', confidences: [
+            { label: '1girl', confidence: .99 }, { label: 'long hair', confidence: .93 }, { label: 'holding_knife', confidence: .72 },
+            { label: '<img src=x onerror=alert(1)>', confidence: .99 }, { label: '!macro:injected!', confidence: .99 },
+        ] };
+        const characters = threshold === .8 ? {} : { label: 'test_character', confidences: [{ label: 'test_character', confidence: .96 }] };
+        const data = job.service === 'wd' ? ['UNTRUSTED_REMOTE_TEXT', { label: 'general' }, characters, general]
+            : ['UNTRUSTED_REMOTE_TEXT', '', 'UNTRUSTED_REMOTE_TEXT', characters, general, '<img src=x onerror=alert(1)>'];
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write('event: heartbeat\ndata: null\n\n');
+        setTimeout(() => { if (!res.destroyed) res.end(threshold === .95 ? 'event: error\ndata: "mock service unavailable"\n\n'
+            : `event: complete\ndata: ${JSON.stringify(data)}\n\n`); }, threshold === .9 ? 1500 : 70);
+        return;
+    }
     if (req.url === '/gradio_api/upload') {
         artistRequests.push({ type: 'upload', authorization: req.headers.authorization || '', body: body.toString('latin1') });
         return json(res, ['/tmp/gradio/mock/reference.jpg']);

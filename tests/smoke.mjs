@@ -48,7 +48,8 @@ async function post(path, body) {
 try {
     launch('tests/mock-provider.mjs', { MOCK_PORT: String(MOCK_PORT) });
     launch('tests/mock-proxy.mjs', { PROXY_PORT: String(PROXY_PORT) });
-    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir, IMAGE_STUDIO_KALOSCOPE_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}` });
+    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir, IMAGE_STUDIO_KALOSCOPE_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}`,
+        IMAGE_STUDIO_WD_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}/wd`, IMAGE_STUDIO_PIXAI_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}/pixai` });
     await Promise.all([
         waitFor(`http://127.0.0.1:${APP_PORT}`),
         waitFor(`http://127.0.0.1:${MOCK_PORT}/models`),
@@ -236,7 +237,28 @@ try {
     }
     const noConsent = await fetch(`http://127.0.0.1:${APP_PORT}/api/artists/classify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dataUrl: openai.dataUrl }) });
     assert.equal(noConsent.status, 400);
-    console.log('Smoke tests passed: artist upload/Gradio/SSE/proxy/consent/key isolation, automatic image archiving, idempotent legacy imports, local-only folder API, all providers, NovelAI personal token/JSON/proxy, V3/V4.5/V5/Medium parameters, reference isolation, key check');
+    for (const service of ['wd', 'pixai']) {
+        const tagged = await post('/api/images/tag', { dataUrl: openai.dataUrl, consent: true, service,
+            apiKey: 'PRIVATE_TAGGER_KEY', prompt: 'PRIVATE_TAGGER_PROMPT', filename: 'PRIVATE_TAGGER_FILE.png',
+            proxy: { proxyEnabled: true, proxyUrl: `http://127.0.0.1:${PROXY_PORT}`, proxyUsername: 'proxy-user', proxyPassword: 'proxy-pass' } });
+        assert.deepEqual(tagged.tags.map(tag => tag.name), ['1girl', 'test_character', 'long_hair', 'holding_knife']);
+        assert.equal(tagged.service, service);
+        const withoutCharacters = await post('/api/images/tag', { dataUrl: openai.dataUrl, consent: true, service, generalThreshold: .8 });
+        assert.deepEqual(withoutCharacters.tags.map(tag => tag.name), ['1girl', 'long_hair']);
+    }
+    const taggerRequests = await fetch(`${endpoint}/__tagger-requests`).then(response => response.json());
+    assert.equal(taggerRequests.every(request => !request.authorization), true);
+    assert.equal(JSON.stringify(taggerRequests).includes('PRIVATE_TAGGER'), false);
+    assert.equal((await fs.readdir(imagesDir)).length, beforeArtistFiles, 'Tagger archived uploaded art');
+    for (const headers of [{ Origin: 'https://evil.test', 'Content-Type': 'application/json' }, { 'Content-Type': 'text/plain' }]) {
+        const response = await fetch(`http://127.0.0.1:${APP_PORT}/api/images/tag`, { method: 'POST', headers, body: JSON.stringify({ dataUrl: openai.dataUrl, consent: true }) });
+        assert.ok([403, 415].includes(response.status));
+    }
+    for (const body of [{ dataUrl: openai.dataUrl }, { consent: true, dataUrl: openai.dataUrl, service: 'unknown' }]) {
+        const response = await fetch(`http://127.0.0.1:${APP_PORT}/api/images/tag`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        assert.equal(response.status, 400);
+    }
+    console.log('Smoke tests passed: WD/PixAI uploads/Gradio/empty labels/SSE/proxy/consent/key isolation/no archiving, artist upload/Gradio/SSE/proxy/consent/key isolation, automatic image archiving, idempotent legacy imports, local-only folder API, all providers, NovelAI personal token/JSON/proxy, V3/V4.5/V5/Medium parameters, reference isolation, key check');
 } finally {
     for (const child of children) child.kill();
     await Promise.all(children.filter(child => child.exitCode === null).map(child => new Promise(resolve => child.once('exit', resolve))));

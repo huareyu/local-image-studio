@@ -123,7 +123,8 @@ async function layoutCheck() {
 }
 
 try {
-    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir, IMAGE_STUDIO_KALOSCOPE_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}` });
+    launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir, IMAGE_STUDIO_KALOSCOPE_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}`,
+        IMAGE_STUDIO_WD_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}/wd`, IMAGE_STUDIO_PIXAI_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}/pixai` });
     launch('tests/mock-provider.mjs', { MOCK_PORT: String(MOCK_PORT) });
     await waitUntil(() => fetch(origin).then(response => response.ok), 'local app');
     const browser = process.env.IMAGE_STUDIO_BROWSER || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
@@ -930,8 +931,95 @@ try {
     assert.equal(await evaluate("document.querySelector('#artist-preview').hasAttribute('src')"), false, 'Classifier persisted uploaded art');
     assert.equal(await evaluate("document.querySelector('#artist-run').disabled"), true);
     await click('#nav-studio');
+    // WD/PixAI analysis is opt-in, isolated from generation, and safe on mobile.
+    await click('#nav-tagger');
+    assert.equal(await evaluate("document.querySelector('#studio-workspace').classList.contains('hidden') && document.querySelector('#artist-page').classList.contains('hidden')"), true);
+    assert.equal(await evaluate("document.querySelector('#nav-tagger').getAttribute('aria-pressed')"), 'true');
+    await evaluate(`(async () => {
+        const data=new DataTransfer(); const canvas=document.createElement('canvas'); canvas.width=1800; canvas.height=1200;
+        const ctx=canvas.getContext('2d'); ctx.fillStyle='#c29ad9'; ctx.fillRect(0,0,1800,1200);
+        const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+        data.items.add(new File([blob],'PRIVATE_TAGGER_ART.png',{type:'image/png'}));
+        window.dispatchEvent(new ClipboardEvent('paste',{cancelable:true,clipboardData:data}));
+    })()`);
+    await waitUntil(() => evaluate("document.querySelector('#tagger-caption').textContent.includes('1024×683')"), 'local tagger paste/preparation');
+    assert.equal(await evaluate("document.querySelectorAll('.reference-card').length"), 2);
+    assert.equal(await evaluate("document.querySelector('#tagger-run').disabled"), true);
+    assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__tagger-requests`).then(response=>response.json())).length, 0);
+    await change('#tagger-consent', true);
+    await press('Enter', 'Enter', 13, 2);
+    assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response=>response.json())).length, beforeTagRequests);
+    await click('#tagger-run');
+    await waitUntil(() => evaluate("document.querySelectorAll('.tagger-chip').length === 4 && !document.querySelector('#tagger-run').disabled"), 'WD tags');
+    assert.equal(await evaluate("document.querySelector('#tagger-tags').value"), '1girl, long_hair, holding_knife');
+    assert.equal(await evaluate("document.querySelector('.tagger-chip.character').getAttribute('aria-pressed')"), 'false');
+    assert.equal(await evaluate("document.querySelector('#tagger-result-box img, #tagger-result-box script') !== null"), false);
+    await click('.tagger-chip[data-tag="holding_knife"]');
+    assert.equal(await evaluate("document.querySelector('#tagger-tags').value"), '1girl, long_hair');
+    await change('#tagger-format', 'spaces');
+    assert.equal(await evaluate("document.querySelector('#tagger-tags').value"), '1girl, long hair');
+    await change('#tagger-tags', '1girl, long hair, manual edit', 'input');
+    const beforeTagTransfer = await evaluate("({prefix:document.querySelector('#prefix').value,prompt:document.querySelector('#prompt').value,negative:document.querySelector('#novelai-negative').value,refs:document.querySelectorAll('.reference-card.enabled').length})");
+    await click('#tagger-use');
+    const afterTagTransfer = await evaluate("({prefix:document.querySelector('#prefix').value,prompt:document.querySelector('#prompt').value,negative:document.querySelector('#novelai-negative').value,refs:document.querySelectorAll('.reference-card.enabled').length})");
+    assert.ok(afterTagTransfer.prompt.startsWith(beforeTagTransfer.prompt)); assert.ok(afterTagTransfer.prompt.endsWith('manual edit, '));
+    assert.equal(afterTagTransfer.prefix, beforeTagTransfer.prefix); assert.equal(afterTagTransfer.negative, beforeTagTransfer.negative); assert.equal(afterTagTransfer.refs, beforeTagTransfer.refs);
+    await click('#nav-tagger'); await click('#tagger-use-prefix');
+    assert.ok(await evaluate("document.querySelector('#prefix').value.endsWith('manual edit, ')"));
+    await click('#nav-tagger'); await change('#tagger-service', 'pixai');
+    assert.equal(await evaluate("document.querySelector('#tagger-model-field').classList.contains('hidden')"), true);
+    assert.equal(await evaluate("document.querySelector('#tagger-consent').checked"), false);
+    assert.equal(await evaluate("document.querySelector('#tagger-general').value"), '0.3');
+    await change('#tagger-consent', true); await click('#tagger-run');
+    await waitUntil(() => evaluate("document.querySelectorAll('.tagger-chip').length === 4 && !document.querySelector('#tagger-run').disabled"), 'PixAI tags');
+    const taggerRequests = await fetch(`http://127.0.0.1:${MOCK_PORT}/__tagger-requests`).then(response=>response.json());
+    assert.equal(taggerRequests.some(request=>request.authorization), false);
+    assert.equal(JSON.stringify(taggerRequests).includes('PRIVATE_TAGGER_ART'), false);
+    assert.deepEqual(taggerRequests.find(request=>request.type==='predict'&&request.service==='pixai').payload.data.slice(1), [.3,.75,false,true]);
+    await change('#tagger-general',.95,'input'); await click('#tagger-run');
+    await waitUntil(() => evaluate("document.querySelector('#tagger-status').dataset.kind === 'error' && !document.querySelector('#tagger-run').disabled"), 'tagger error/retry controls');
+    await change('#tagger-general',.9,'input'); await click('#tagger-run'); await click('#tagger-cancel');
+    await waitUntil(() => evaluate("document.querySelector('#tagger-status').textContent.includes('Ожидание остановлено') && !document.querySelector('#tagger-run').disabled"), 'tagger cancel wait');
+    await change('#tagger-general',.3,'input'); await click('#tagger-run');
+    await waitUntil(() => evaluate("document.querySelectorAll('.tagger-chip').length === 4 && !document.querySelector('#tagger-run').disabled"), 'tagger retry');
+    await change('#tagger-general',.8,'input'); await click('#tagger-run');
+    await waitUntil(() => evaluate("document.querySelectorAll('.tagger-chip').length === 2 && !document.querySelector('#tagger-run').disabled"), 'empty character results from Gradio');
+    assert.equal(await evaluate("document.querySelector('#tagger-character-box').classList.contains('hidden')"), true);
+    await change('#tagger-general',.3,'input'); await click('#tagger-run');
+    await waitUntil(() => evaluate("document.querySelectorAll('.tagger-chip').length === 4 && !document.querySelector('#tagger-run').disabled"), 'tagger after empty character result');
+    await click('#tagger-select-none'); assert.equal(await evaluate("document.querySelector('#tagger-use').disabled"), true);
+    await click('#tagger-select-all'); assert.ok(await evaluate("document.querySelector('#tagger-tags').value.includes('test character')"));
+    await click('#nav-artists'); assert.equal(await evaluate("document.querySelector('#tagger-page').classList.contains('hidden')"), true);
+    await click('#nav-tagger');
+    for (const width of [360,390,430]) {
+        await cdp('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:true}); await layoutCheck();
+    }
+    const taggerClip = await evaluate("(() => {const b=document.querySelector('#tagger-page').getBoundingClientRect(); return {x:b.left+scrollX,y:b.top+scrollY,width:b.width,height:b.height,scale:1}})()");
+    const taggerScreenshot = await cdp('Page.captureScreenshot',{captureBeyondViewport:true,format:'png',clip:taggerClip});
+    await fs.writeFile(path.join(root,'preview-image-tagger-mobile.png'),Buffer.from(taggerScreenshot.data,'base64'));
+    await reload();
+    assert.equal(await evaluate("document.querySelector('#tagger-page').classList.contains('hidden')"), false);
+    assert.equal(await evaluate("document.querySelector('#tagger-consent').checked"), false);
+    assert.equal(await evaluate("document.querySelector('#tagger-preview').hasAttribute('src')"), false);
+    assert.equal(await evaluate("document.querySelector('#tagger-tags').value"), '');
+    assert.equal(await evaluate("document.querySelector('#tagger-service').value"), 'pixai');
+    await click('#nav-gallery'); await click('.history-preview');
+    await waitUntil(() => evaluate("!document.querySelector('#viewer-use-prompt').disabled"), 'tagger canvas source after reload');
+    await click('#viewer-use-prompt'); await click('#nav-tagger');
+    await click('#tagger-current');
+    await waitUntil(() => evaluate("document.querySelector('#tagger-caption').textContent.startsWith('Картинка с холста')"), 'tagger source from canvas');
+    await evaluate(`(async () => {
+        const blob=await fetch(document.querySelector('#tagger-preview').src).then(response=>response.blob());
+        const data=new DataTransfer(); data.items.add(new File([blob],'PRIVATE_TAG_UPLOAD.jpg',{type:'image/jpeg'}));
+        const input=document.querySelector('#tagger-upload'); input.files=data.files; input.dispatchEvent(new Event('change',{bubbles:true}));
+    })()`);
+    await waitUntil(() => evaluate("document.querySelector('#tagger-caption').textContent.startsWith('PRIVATE_TAG_UPLOAD.jpg')"), 'tagger file upload preview');
+    assert.equal(await evaluate("document.querySelector('#tagger-consent').checked"), false);
+    await click('#tagger-clear'); assert.equal(await evaluate("document.querySelector('#tagger-preview').hasAttribute('src')"), false);
+    await click('#nav-gallery'); assert.equal(await evaluate("document.querySelector('#tagger-page').classList.contains('hidden')"), true);
+    assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response=>response.json())).length, beforeTagRequests);
     assert.deepEqual(errors, [], 'Browser JS errors');
-    console.log('Browser checks passed: Kaloscope tab/upload/paste/canvas/consent/privacy/artist links/style transfer/errors/cancel/mobile, large 140k+ Danbooru worker catalog/aliases/categories/pagination/stale-query protection, local NovelAI tag suggestions/imports/Russian search/weights/reordering/undo/isolation, no generation calls for tag help, gallery search/provider/date/sort/page shortcuts, filtered full-screen browsing, real keyboard and phone swipes, rapid navigation, current-image download, small thumbnails, explicit prompt reuse, inline colored capsules, real keyboard/caret/Unicode/IME, copy/cut/plain paste, atomic deletion, undo/redo, reload, styles/previews/mode isolation, chunk autocomplete/expansion/renaming, no API calls for invalid chunks, database migration, history, profiles, mobile layout');
+    console.log('Browser checks passed: WD/PixAI tab/upload/paste/canvas/consent/tag capsules/edits/formats/append-only transfer/empty results/errors/cancel/mobile, Kaloscope tab/upload/paste/canvas/consent/privacy/artist links/style transfer/errors/cancel/mobile, large 140k+ Danbooru worker catalog/aliases/categories/pagination/stale-query protection, local NovelAI tag suggestions/imports/Russian search/weights/reordering/undo/isolation, no generation calls for tag help, gallery search/provider/date/sort/page shortcuts, filtered full-screen browsing, real keyboard and phone swipes, rapid navigation, current-image download, small thumbnails, explicit prompt reuse, inline colored capsules, real keyboard/caret/Unicode/IME, copy/cut/plain paste, atomic deletion, undo/redo, reload, styles/previews/mode isolation, chunk autocomplete/expansion/renaming, no API calls for invalid chunks, database migration, history, profiles, mobile layout');
 } finally {
     socket?.close();
     for (const request of pending.values()) clearTimeout(request.timeout);
