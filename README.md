@@ -2,7 +2,7 @@
 
 一个运行在本机的轻量级 AI 图像生成工作台。它提供连接配置、多参考图管理、提示词编辑和本地生成历史，不依赖 SillyTavern，也不需要安装前端框架。
 
-> 当前版本：`0.10.0`<br>
+> 当前版本：`0.11.1`<br>
 > 界面语言：俄语<br>
 > 运行环境：Node.js 20 或更高版本
 
@@ -11,6 +11,7 @@
 - 创建多个独立的连接配置；
 - 一键切换“普通 / NovelAI”模式，两种模式分别记住连接配置、密钥及模型；
 - 每个配置可保存不同的 API 类型、Endpoint、密钥、模型和图像参数；
+- 一键允许同一台电脑上的助手使用指定连接配置生成图片，无需把生成密钥贴进聊天，也无需 MCP 或公网服务器；
 - 每个连接配置可单独启用带认证信息的 HTTP/HTTPS 代理；
 - 支持 Gemini-compatible、OpenAI-compatible、OpenRouter 和 NovelAI；
 - 一次上传多张参考图；
@@ -112,6 +113,8 @@ https://image.novelai.net
 
 负面提示词不会追加到正面提示词中。NovelAI 的负面模板可以创建、修改、重命名和删除，并与其他 API 的负面提示词分开保存。Seed 默认为 `-1`（随机），实际使用的 Seed 会显示在结果下方并保存到历史。
 
+NovelAI 负面提示词在输入、删除、选标签、应用风格或选择模板时立即保存到当前连接配置；不需要先失去焦点、点击保存配置或生成图片。主动清空也会保留空文本。普通输入只保存当前配置的草稿，不改写模板库；`✓` 才更新选中的模板，`＋` 创建新模板。各配置及普通模式的负面文本相互独立。
+
 模型限制：
 
 - V5 Full / Curated：支持可调 Steps、Sampler、Scheduler、Guidance、Rescale 和负面提示词；不发送 Precise Reference、Decrisper、Variety+ 或 SMEA；
@@ -149,6 +152,32 @@ Anlas Guard 将请求限制在 28 Steps 和 1,048,576 像素以内；Medium 仍�
 
 在连接配置中启用代理后，该配置的远程模型列表、生成请求以及远程结果图片下载都会通过所填的 HTTP/HTTPS 代理发送。代理设置不会影响其他连接配置。一般 API 可点击模型字段旁的 `↻` 验证连接；NovelAI 使用“检查密钥”按钮。
 
+## 允许本机助手生成图片
+
+在连接面板底部找到 `Картинки для помощника`，选择需要的连接配置后，点击 `Разрешить помощнику использовать этот профиль` 并确认。此操作本身不生成图片。助手可以通过项目里的 `scripts/studio-assistant.mjs` 使用允许的配置；旁边的按钮可以复制不含密钥的使用说明，或立即关闭访问。
+
+这里只授权当前配置的**快照**：提供商、模型、Endpoint、密钥、代理、尺寸及相关模型参数。切换配置或修改模型不会悄悄改变已授权配置，必须再次点击更新访问。浏览器里的场景文本、风格前缀、参考图库和 Chunks 不会自动传递。NovelAI 使用配置中的参数与负面提示词；其参考图仍请通过网页处理。
+
+授权默认关闭，只在当前 Node 服务器进程中有效；刷新浏览器不会撤销，但重启服务器后需要重新点击。提供商密钥及代理密码只存于服务器内存，不写入授权文件。`.assistant-access/connection.json` 仅含本机访问令牌与回环地址，已加入 `.gitignore`；不要将它复制到聊天、仓库或共享位置。该功能不隔离同一电脑账户下拥有完整文件权限的软件。
+
+助手先执行无费用的状态检查：
+
+```sh
+node scripts/studio-assistant.mjs status
+```
+
+用户明确要求生成后，才调用：
+
+```sh
+node scripts/studio-assistant.mjs generate --prompt "Soft painted forest background, no text" --aspect 16:9 --resolution 1K --output "assets/forest.png"
+```
+
+可以用 `--prompt-file prompt.txt` 避免命令行引号问题，也可显式提供 `--reference image.png`（最多 5 张，每张 8MB 内，仅 PNG/JPEG/WebP）；不会读取网页参考图库。结果默认归档到 `generated-images/`，`--output` 会另外保存到项目路径；不覆盖已有文件，扩展名按实际 MIME 调整。浏览器的 IndexedDB 历史不会自动增加记录。命令只返回文件路径和模型等简短信息，不打印提示词、密钥或图片 base64。
+
+一次仅一个助手请求，每小时最多 20 次，失败也计数；每次一张图，无自动重试。这不是提供商侧的账单上限。关闭访问或中止等待不保证取消已经开始的远程生成或退款。API 仅监听 `127.0.0.1`，生成调用需要本地访问令牌，配置管理还要求同源网页确认；不是通用的云端聊天接口。更详细的助手规则见 [ASSISTANT.md](ASSISTANT.md)。
+
+测试 / 自定义启动目录可用服务端环境变量 `IMAGE_STUDIO_ASSISTANT_DIR`；客户端脚本也使用同一变量。不要把该目录放在公开或共享位置。
+
 ## 参考图库
 
 可以通过以下方式加入图片：
@@ -175,6 +204,8 @@ NovelAI 模式额外显示 Chunks 分页。可以把选中的文本保存为 Chu
 语法依据 [NovelAI 官方 Prompt Chunks 文档](https://docs.novelai.net/en/image/promptchunks/)。这里的库只存储在本机浏览器，**不会与 NovelAI 账户或官方云端同步**；清除浏览器站点数据也会删除风格、预览图和 Chunks。
 
 ## NovelAI 标签助手
+
+标签与 Chunks 的输入建议使用不占文档布局的浮动下拉框，不会因候选项出现、更新或消失而撑开面板、移动输入框或滚动页面。候选列表可独立滚动，并按手机可见视口调整位置；方向键只滚动候选列表，Enter 选词，Escape 关闭。
 
 NovelAI 模式的提示词面板中新增“提示词助手”。输入英文标签片段（如 `blue ha`）时会显示补全：`↑` / `↓` 选择、`Enter` 插入、`Esc` 关闭。补全仅在 NovelAI 模式生效，可单独关闭，开关会保存在浏览器中。`@` 仍然只用于 Chunks，不会被标签补全接管。
 
@@ -256,6 +287,7 @@ Danbooru CSV 来自 [DominikDoom/a1111-sd-webui-tagcomplete](https://github.com/
 - Kaloscope 分页是明确同意后才上传的外部画风分类服务，不属于离线识别；
 - WD / PixAI 同样是手动同意后上传的在线标签识别服务，不会转发生成 API 的密钥；
 - 项目不会把密钥写入源码、日志或 Git 仓库；
+- 本机助手访问令牌保存在 Git 忽略的 `.assistant-access/`；授权的提供商密钥只留在服务器内存，需由用户明确开启；
 - 请仅使用你信任的 Endpoint。
 
 清除浏览器站点数据会同时删除本地配置、参考图和历史记录，但不会删除已归档到磁盘的图片。
@@ -285,6 +317,7 @@ image-studio/
 │  ├─ analysis-image.js  # 分析工具共用的本地缩图与元数据移除
 │  ├─ image-tagger.js   # 独立图片标签分页、确认、胶囊和文本编辑
 │  ├─ image-tagger-tools.js # 服务、模型、标签格式与安全追加
+│  ├─ assistant-access.js # 一键授权、状态与撤销界面
 │  ├─ data/             # Danbooru CSV、来源元数据及 MIT 声明
 │  └─ novelai.js       # 前后端共用的 NovelAI 参数规则
 ├─ lib/
@@ -292,7 +325,8 @@ image-studio/
 │  ├─ image-archive.mjs  # 原始图片归档及打开本机文件夹
 │  ├─ artist-classifier.mjs # Kaloscope 上传、Gradio 队列及结果解析
 │  ├─ gradio.mjs         # 有大小限制的上传与 SSE 解析
-│  └─ image-tagger.mjs   # WD / PixAI 参数与结果验证
+│  ├─ image-tagger.mjs   # WD / PixAI 参数与结果验证
+│  └─ assistant-access.mjs # 内存配置授权、令牌、限流及参数边界
 ├─ generated-images/   # 私人生成图片（已被 Git 忽略）
 ├─ tests/
 │  ├─ mock-provider.mjs
@@ -305,12 +339,15 @@ image-studio/
 │  ├─ tag-catalog.test.mjs
 │  ├─ artist-classifier.test.mjs
 │  ├─ image-tagger.test.mjs
+│  ├─ assistant-access.test.mjs
 │  ├─ browser.mjs
 │  └─ smoke.mjs
 ├─ server.mjs          # 静态服务器与 API 代理
 ├─ scripts/update-danbooru.mjs # 校验并下载固定版本词库
 ├─ scripts/check-kaloscope.mjs # 显式联网检查（只创建并上传人工渐变测试图）
 ├─ scripts/check-image-tagger.mjs # WD / PixAI 显式联网检查（只上传人工测试图）
+├─ scripts/studio-assistant.mjs # 本机助手调用客户端（不打印密钥）
+├─ ASSISTANT.md        # 助手操作规则与调用示例
 ├─ start-local.bat     # Windows 快速启动
 └─ package.json
 ```

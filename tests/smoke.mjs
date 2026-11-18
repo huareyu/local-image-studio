@@ -49,6 +49,7 @@ try {
     launch('tests/mock-provider.mjs', { MOCK_PORT: String(MOCK_PORT) });
     launch('tests/mock-proxy.mjs', { PROXY_PORT: String(PROXY_PORT) });
     launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir, IMAGE_STUDIO_KALOSCOPE_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}`,
+        IMAGE_STUDIO_ASSISTANT_DIR: path.join(imagesDir, 'assistant-private'),
         IMAGE_STUDIO_WD_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}/wd`, IMAGE_STUDIO_PIXAI_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}/pixai` });
     await Promise.all([
         waitFor(`http://127.0.0.1:${APP_PORT}`),
@@ -258,7 +259,77 @@ try {
         const response = await fetch(`http://127.0.0.1:${APP_PORT}/api/images/tag`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         assert.equal(response.status, 400);
     }
-    console.log('Smoke tests passed: WD/PixAI uploads/Gradio/empty labels/SSE/proxy/consent/key isolation/no archiving, artist upload/Gradio/SSE/proxy/consent/key isolation, automatic image archiving, idempotent legacy imports, local-only folder API, all providers, NovelAI personal token/JSON/proxy, V3/V4.5/V5/Medium parameters, reference isolation, key check');
+    // Assistant access is off by default and can only be granted by a same-origin UI action.
+    const appOrigin = `http://127.0.0.1:${APP_PORT}`;
+    const uiHeaders = { 'Content-Type': 'application/json', Origin: appOrigin, 'X-Image-Studio-UI': '1' };
+    const assistantPost = async (action, body = {}, headers = {}) => {
+        const response = await fetch(`${appOrigin}/api/assistant/${action}`, { method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+        return { status: response.status, data: await response.json() };
+    };
+    const uiStatus = await assistantPost('status', {}, uiHeaders); assert.equal(uiStatus.data.enabled, false);
+    assert.equal((await assistantPost('info')).status, 403);
+    const assistantProfile = { id: 'helper', name: 'Assistant Nano Banana', provider: 'gemini', endpoint,
+        model: 'mock-gemini-image', apiKey: 'ASSISTANT_PROVIDER_SECRET', imageSize: '2K', aspectRatio: '3:4',
+        proxyEnabled: true, proxyUrl: `http://127.0.0.1:${PROXY_PORT}`, proxyUsername: 'proxy-user', proxyPassword: 'proxy-pass' };
+    assert.equal((await assistantPost('enable', { consent: true, profile: assistantProfile })).status, 403);
+    assert.equal((await assistantPost('enable', { consent: true, profile: assistantProfile }, { ...uiHeaders, Origin: 'https://evil.test' })).status, 403);
+    assert.equal((await assistantPost('enable', { profile: assistantProfile }, uiHeaders)).status, 400);
+    const enabled = await assistantPost('enable', { consent: true, profile: assistantProfile }, uiHeaders);
+    assert.equal(enabled.status, 200); assert.equal(enabled.data.profile.model, 'mock-gemini-image');
+    assert.equal(/SECRET|proxy-pass|token|endpoint/.test(JSON.stringify(enabled.data)), false);
+    const connectionPath = path.join(imagesDir, 'assistant-private', 'connection.json');
+    const connection = JSON.parse(await fs.readFile(connectionPath, 'utf8'));
+    assert.equal(JSON.stringify(connection).includes('ASSISTANT_PROVIDER_SECRET'), false);
+    const auth = { Authorization: `Bearer ${connection.token}` };
+    assert.equal((await assistantPost('info', {}, auth)).data.enabled, true);
+    assert.equal((await assistantPost('info', {}, { Authorization: `Bearer ${'0'.repeat(64)}` })).status, 401);
+    assert.equal((await assistantPost('generate', { prompt: 'test' }, { ...auth, Origin: appOrigin })).status, 403);
+    assert.equal((await assistantPost('generate', { prompt: 'test', profile: { endpoint: 'http://evil.test' } }, auth)).status, 400);
+    const helperImage = await assistantPost('generate', { prompt: 'assistant portrait', imageSize: '1K', aspectRatio: '16:9' }, auth);
+    assert.equal(helperImage.status, 200); assert.ok(helperImage.data.dataUrl.startsWith('data:image/png;'));
+    assert.ok(helperImage.data.archive?.fileName); assert.equal(JSON.stringify(helperImage.data).includes('ASSISTANT_PROVIDER_SECRET'), false);
+    const imageRequests = await fetch(`${endpoint}/__image-requests`).then(response => response.json());
+    const lastRequest = imageRequests.at(-1);
+    assert.equal(lastRequest.authorization, 'Bearer ASSISTANT_PROVIDER_SECRET');
+    assert.equal(JSON.stringify(lastRequest).includes(connection.token), false);
+    assert.deepEqual(lastRequest.payload.generationConfig.imageConfig, { aspectRatio: '16:9', imageSize: '1K' });
+    assert.deepEqual(lastRequest.payload.contents[0].parts, [{ text: 'assistant portrait' }], 'Assistant leaked the browser draft or references');
+    const failedHelper = await assistantPost('generate', { prompt: 'ASSISTANT_ERROR' }, auth);
+    assert.equal(failedHelper.status, 502); assert.equal(JSON.stringify(failedHelper.data).includes('UPSTREAM_SECRET'), false);
+    // Exercise the actual command, using only the temporary mock grant (never the user's connection).
+    const runCommand = args => new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [fileURLToPath(new URL('scripts/studio-assistant.mjs', root)), ...args], {
+            cwd: fileURLToPath(root), env: { ...process.env, IMAGE_STUDIO_ASSISTANT_DIR: path.dirname(connectionPath) }, windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        }); children.push(child); let stdout = '', stderr = '';
+        child.stdout.on('data', data => { stdout += data; }); child.stderr.on('data', data => { stderr += data; });
+        child.once('error', reject); child.once('exit', code => resolve({ code, stdout, stderr }));
+    });
+    const cliStatus = await runCommand(['status']); assert.equal(cliStatus.code, 0);
+    assert.equal(/ASSISTANT_PROVIDER_SECRET|proxy-pass/.test(cliStatus.stdout + cliStatus.stderr), false);
+    assert.equal(cliStatus.stdout.includes(connection.token), false);
+    const cliOutput = path.join(imagesDir, 'assistant-cli.png');
+    const cli = await runCommand(['generate', '--prompt', 'CLI test', '--output', cliOutput]);
+    assert.equal(cli.code, 0, cli.stderr); assert.equal(JSON.parse(cli.stdout).filePath, cliOutput);
+    assert.ok((await fs.readFile(cliOutput)).equals(Buffer.from(openai.dataUrl.split(',')[1], 'base64')));
+    assert.equal(cli.stdout.includes('base64') || cli.stdout.includes('ASSISTANT_PROVIDER_SECRET'), false);
+    const usedBeforeExistingFile = (await assistantPost('info', {}, auth)).data.usedLastHour;
+    const existing = await runCommand(['generate', '--prompt', 'Must not pay again', '--output', cliOutput]);
+    assert.equal(existing.code, 1); assert.match(existing.stderr, /уже существует/);
+    assert.equal((await assistantPost('info', {}, auth)).data.usedLastHour, usedBeforeExistingFile);
+    const slow = assistantPost('generate', { prompt: 'ASSISTANT_SLOW' }, auth);
+    for (let i = 0; i < 30; i++) {
+        if ((await assistantPost('status', {}, uiHeaders)).data.busy) break;
+        await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal((await assistantPost('generate', { prompt: 'second concurrent request' }, auth)).status, 409);
+    assert.equal((await assistantPost('disable', {}, uiHeaders)).data.enabled, false);
+    assert.equal((await slow).status, 499);
+    assert.equal((await assistantPost('info', {}, auth)).status, 403);
+    assert.equal(JSON.parse((await runCommand(['status'])).stdout).enabled, false);
+    await assert.rejects(fs.access(connectionPath), error => error.code === 'ENOENT');
+    console.log('Smoke tests passed: assistant UI-only grant/auth/snapshot/generation/proxy/secret isolation/CLI/existing-file guard/revoke/cancel, WD/PixAI uploads/Gradio/empty labels/SSE/proxy/consent/key isolation/no archiving, artist upload/Gradio/SSE/proxy/consent/key isolation, automatic image archiving, idempotent legacy imports, local-only folder API, all providers, NovelAI personal token/JSON/proxy, V3/V4.5/V5/Medium parameters, reference isolation, key check');
 } finally {
     for (const child of children) child.kill();
     await Promise.all(children.filter(child => child.exitCode === null).map(child => new Promise(resolve => child.once('exit', resolve))));

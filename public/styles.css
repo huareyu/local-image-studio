@@ -229,10 +229,12 @@ input:focus, textarea:focus, select:focus {
 .chunk-capsule-remove:hover { background: #fff2; }
 .library-apply > .chunk-library-name { justify-self: start; max-width: calc(100% - 45px); margin: 0 0 0 8px; padding: 2px 9px; font-size: 11px; }
 .chunk-inspection { margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.5; max-height: 180px; overflow-y: auto; }
-.chunk-suggestions:not(:empty) { display: grid; gap: 3px; margin-top: 6px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--field); }
+.chunk-suggestions:not(:empty) { display: grid; gap: 3px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--field); }
 .chunk-suggestion { width: 100%; padding: 9px; border: 0; border-radius: 7px; color: var(--text); background: transparent; text-align: left; overflow-wrap: anywhere; font-size: 11px; }
 .chunk-suggestion[aria-selected="true"] { color: var(--accent); background: var(--accent-soft); }
-.tag-suggestions:not(:empty) { display: grid; gap: 3px; margin: 6px 0 10px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--field); }
+.tag-suggestions:not(:empty) { display: grid; gap: 3px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--field); }
+.suggestion-popup { position: fixed; z-index: 60; margin: 0; max-width: calc(100vw - 16px); overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; touch-action: pan-y pinch-zoom; box-shadow: 0 12px 32px #0009; visibility: hidden; }
+.suggestion-popup:empty, .suggestion-popup[hidden] { display: none; }
 .tag-suggestion { display: grid; gap: 3px; width: 100%; padding: 9px 11px; border: 0; border-radius: 8px; color: var(--text); background: transparent; text-align: left; }
 .tag-suggestion[aria-selected="true"] { background: var(--accent-soft); }
 .tag-suggestion strong { color: var(--accent); font-size: 12px; font-weight: 600; }
@@ -584,6 +586,13 @@ body.viewer-open { overflow: hidden; }
 .artist-selection-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--accent); }
 #artist-tags { font-size: 12px; }
 .artist-credit { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+.assistant-access { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.assistant-access h3 { margin: 0 0 8px; font-size: 13px; }
+#assistant-enable { width: 100%; min-height: 44px; height: auto; padding: 11px 14px; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.assistant-access .hint { overflow-wrap: anywhere; }
+.assistant-access .artist-run-actions { margin-top: 8px; }
+.assistant-help { margin-top: 12px; }
+.assistant-help summary { color: var(--muted); font-size: 11px; cursor: pointer; }
 .tagger-group-title { margin: 22px 0 12px; font-size: 13px; }
 .tagger-tags { display: flex; flex-wrap: wrap; align-content: start; gap: 8px; max-height: 440px; overflow-y: auto; overscroll-behavior: contain; padding: 3px; }
 .tagger-chip { display: inline-flex; gap: 8px; align-items: center; max-width: 100%; min-height: 36px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 20px; background: var(--field); color: var(--muted); font-size: 12px; text-align: left; }

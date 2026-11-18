@@ -45,7 +45,9 @@ function cdp(method, params = {}) {
 }
 
 async function evaluate(expression) {
-    const reply = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    let reply;
+    try { reply = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); }
+    catch (error) { throw new Error(`${error.message}; expression: ${expression.slice(0, 180)}`); }
     if (reply.exceptionDetails) throw new Error(reply.exceptionDetails.exception?.description || 'Browser evaluation failed');
     return reply.result.value;
 }
@@ -121,9 +123,20 @@ async function layoutCheck() {
     })()`);
     assert.deepEqual(bad, [], 'Controls overflow viewport');
 }
+async function editorGeometry(id) {
+    return evaluate(`(async () => {
+        await new Promise(resolve=>setTimeout(resolve,100));
+        const field=document.getElementById(${JSON.stringify(id)}), box=field.closest('label').getBoundingClientRect();
+        return { scrollY, pageHeight:document.documentElement.scrollHeight, top:box.top, height:box.height };
+    })()`);
+}
+function assertStableEditor(before, after, label) {
+    for (const key of ['scrollY','pageHeight','top','height']) assert.ok(Math.abs(before[key]-after[key]) <= 1, `${label}: ${key} moved (${before[key]} -> ${after[key]})`);
+}
 
 try {
     launch('server.mjs', { PORT: String(APP_PORT), IMAGE_STUDIO_IMAGES_DIR: imagesDir, IMAGE_STUDIO_KALOSCOPE_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}`,
+        IMAGE_STUDIO_ASSISTANT_DIR: path.join(imagesDir, 'assistant-private'),
         IMAGE_STUDIO_WD_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}/wd`, IMAGE_STUDIO_PIXAI_ENDPOINT: `http://127.0.0.1:${MOCK_PORT}/pixai` });
     launch('tests/mock-provider.mjs', { MOCK_PORT: String(MOCK_PORT) });
     await waitUntil(() => fetch(origin).then(response => response.ok), 'local app');
@@ -131,6 +144,7 @@ try {
     const profileDir = path.join(root, `.edge-novelai-${Date.now()}`);
     const child = spawn(browser, [
         '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+        '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
         `--remote-debugging-port=${DEBUG_PORT}`, `--user-data-dir=${profileDir}`, 'about:blank',
     ], { windowsHide: true, stdio: 'ignore' });
     children.push(child);
@@ -404,10 +418,37 @@ try {
     assert.equal(await evaluate("document.querySelectorAll('.reference-card.enabled').length"), 1);
     await change('#novelai-negative', 'MY PRESET');
     await evaluate("window.prompt = () => 'My negative'; document.querySelector('#novelai-negative-new').click()");
-    await click('#profile-save');
     await reload();
     assert.equal(await evaluate("document.querySelector('#novelai-negative-preset').selectedOptions[0].textContent"), 'My negative');
     assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'MY PRESET');
+    const negativePresetId = await evaluate("document.querySelector('#novelai-negative-preset').value");
+    const negativeProfileId = await evaluate("document.querySelector('#profile-select').value");
+    const typeNegative = async text => {
+        await waitUntil(() => evaluate("document.querySelector('.chunk-rich-editor[data-field=\"novelai-negative\"]')?.getClientRects().length > 0"), 'negative rich editor');
+        await evaluate("document.querySelector('#novelai-negative').focus()");
+        await press('a','KeyA',65,2);
+        if (text) await cdp('Input.insertText',{text}); else await press('Backspace','Backspace',8);
+    };
+    await typeNegative('custom negative without blur or save');
+    await reload();
+    assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'custom negative without blur or save', 'Typed negative was lost on reload');
+    assert.equal(await evaluate(`JSON.parse(localStorage.getItem('image-studio.novelai-negative-presets.v1')).find(p=>p.id===${JSON.stringify(negativePresetId)}).value`), 'MY PRESET', 'Typing silently overwrote a saved template');
+    await typeNegative(''); await reload();
+    assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), '', 'Intentionally empty negative reverted to default');
+    await change('#novelai-negative-preset',negativePresetId); await reload();
+    assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'MY PRESET', 'Preset selection was not saved');
+    await typeNegative('updated saved template'); await click('#novelai-negative-save'); await reload();
+    assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'updated saved template');
+    assert.equal(await evaluate(`JSON.parse(localStorage.getItem('image-studio.novelai-negative-presets.v1')).find(p=>p.id===${JSON.stringify(negativePresetId)}).value`), 'updated saved template');
+    await click('#profile-new'); const secondNegativeProfile = await evaluate("document.querySelector('#profile-select').value");
+    await typeNegative('other profile negative');
+    await change('#profile-select',negativeProfileId);
+    assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'updated saved template');
+    await change('#profile-select',secondNegativeProfile); await reload();
+    assert.equal(await evaluate("document.querySelector('#novelai-negative').value"), 'other profile negative');
+    await evaluate('window.confirm = () => true'); await click('#profile-delete');
+    await change('#profile-select',negativeProfileId);
+    await typeNegative('MY PRESET'); await click('#novelai-negative-save');
     const sessionNovelai = await connection();
     await click('#mode-standard');
     assert.equal(await evaluate("document.querySelector('#provider').value"), 'gemini', 'Connection profile switch failed');
@@ -568,7 +609,7 @@ try {
     }
     assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response => response.json())).length, chunkRequests.length, 'Invalid chunks made a paid API request');
     await change('#prompt', '@Ar', 'input');
-    assert.equal(await evaluate("document.querySelector('#prompt').closest('label').nextElementSibling.querySelectorAll('.chunk-suggestion').length"), 1);
+    assert.equal(await evaluate("document.querySelector('.chunk-suggestions[data-field=prompt]').querySelectorAll('.chunk-suggestion').length"), 1);
     await evaluate("document.querySelector('#prompt').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))");
     assert.equal(await evaluate("document.querySelector('#prompt').value"), '!macro:Artist!, ');
     await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt] .chunk-capsule').click()");
@@ -741,8 +782,16 @@ try {
     await waitUntil(() => evaluate("Number(document.querySelector('#tag-assistant').dataset.baseCount) > 140000"), 'large Danbooru catalog loaded');
     await change('#prompt', '1boy, ', 'input');
     await evaluate("document.querySelector('#prompt').focus(); document.querySelector('#prompt').setSelectionRange(6,6)");
+    const beforeSuggestions = await editorGeometry('prompt');
     await cdp('Input.insertText', { text: 'blue ha' });
     await waitUntil(() => evaluate("document.querySelector('.tag-suggestions[data-field=prompt] strong')?.textContent === 'blue hair'"), 'tag autocomplete');
+    assertStableEditor(beforeSuggestions,await editorGeometry('prompt'),'Showing tag suggestions');
+    await cdp('Input.insertText',{text:'i'});
+    await waitUntil(() => evaluate("document.querySelector('.tag-suggestions[data-field=prompt]').getAttribute('aria-busy') === 'false'"),'updated suggestions');
+    assertStableEditor(beforeSuggestions,await editorGeometry('prompt'),'Updating tag suggestions');
+    await press('Backspace','Backspace',8);
+    await waitUntil(() => evaluate("document.querySelector('.tag-suggestions[data-field=prompt]').getAttribute('aria-busy') === 'false'"),'deletion suggestions');
+    assertStableEditor(beforeSuggestions,await editorGeometry('prompt'),'Deleting a letter with tag suggestions');
     await press('Enter', 'Enter', 13);
     assert.equal(await evaluate("document.querySelector('#prompt').value"), '1boy, blue hair, ');
     await press('z', 'KeyZ', 90, 2);
@@ -752,6 +801,7 @@ try {
     await change('#prompt', '@И', 'input');
     await evaluate("document.querySelector('#prompt').focus(); document.querySelector('#prompt').setSelectionRange(2,2)");
     assert.equal(await evaluate("document.querySelector('.tag-suggestions[data-field=prompt]').children.length"), 0, 'Tag suggestions conflict with @ chunks');
+    assertStableEditor(beforeSuggestions,await editorGeometry('prompt'),'Showing chunk suggestions');
     await press('Enter', 'Enter', 13);
     assert.equal(await evaluate("document.querySelector('#prompt').value.startsWith('!macro:Итан!')"), true);
     await change('#prompt', '!macro:Итан!, 1.2::blue ha::, 1boy', 'input');
@@ -845,6 +895,37 @@ try {
     await change('#prompt', '1boy, !macro:Итан!, green eyes, brown hair', 'input');
     assert.equal(await evaluate("document.querySelector('.chunk-rich-editor[data-field=prompt] .chunk-capsule').classList.contains('missing')"), false, 'Dictionary reset deleted saved chunks');
     await change('#tag-search', 'волосы', 'input');
+    console.log('Checking stable phone popups and keyboard-sized viewport');
+    await evaluate("document.querySelector('#tag-assistant').open=false");
+    for (const [width,height] of [[390,844],[430,844],[390,420]]) {
+        await cdp('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:true});
+        await cdp('Page.bringToFront');
+        for (const [id,query] of [['prompt','blue ha'],['novelai-negative','waterm']]) {
+            await change(`#${id}`,'text, ','input');
+            await evaluate(`(() => {const f=document.getElementById(${JSON.stringify(id)}); f.focus(); f.setSelectionRange(6,6); window.scrollTo(0,scrollY+f.closest('label').getBoundingClientRect().top-150)})()`);
+            const stable = await editorGeometry(id);
+            await cdp('Input.insertText',{text:query});
+            const selector = `.tag-suggestions[data-field="${id}"]`;
+            await waitUntil(() => evaluate(`(() => {const list=document.querySelector(${JSON.stringify(selector)});return list.children.length>0&&list.getAttribute('aria-busy')==='false'&&getComputedStyle(list).visibility==='visible'})()`),'phone suggestion popup');
+            assertStableEditor(stable,await editorGeometry(id),`Phone ${width}x${height} ${id} suggestions`);
+            assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollTop`),0,'New suggestion query retained an old scroll position');
+            const popup = await evaluate(`(() => {const list=document.querySelector(${JSON.stringify(selector)}),b=list.getBoundingClientRect();return {position:getComputedStyle(list).position,left:b.left,right:b.right,top:b.top,bottom:b.bottom,height:innerHeight,width:innerWidth}})()`);
+            assert.equal(popup.position,'fixed'); assert.ok(popup.left>=0&&popup.right<=popup.width+1&&popup.top>=0&&popup.bottom<=popup.height+1,`Phone ${width}x${height} ${id} popup outside viewport: ${JSON.stringify(popup)}`);
+            await press('ArrowUp','ArrowUp',38);
+            assertStableEditor(stable,await editorGeometry(id),'Keyboard selection scrolled the page instead of the popup');
+            await press('Escape','Escape',27);
+            assertStableEditor(stable,await editorGeometry(id),'Hiding phone suggestions moved the page');
+        }
+    }
+    await cdp('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
+    await change('#prompt','1boy, ','input');
+    await evaluate("const f=document.querySelector('#prompt'); f.focus(); f.setSelectionRange(6,6); window.scrollTo(0,scrollY+f.closest('label').getBoundingClientRect().top-150)");
+    await cdp('Input.insertText',{text:'blue ha'});
+    await waitUntil(() => evaluate("(() => {const list=document.querySelector('.tag-suggestions[data-field=prompt]');return list.getAttribute('aria-busy')==='false'&&getComputedStyle(list).visibility==='visible'&&list.scrollTop===0})()"),'mobile popup screenshot');
+    const popupScreenshot = await cdp('Page.captureScreenshot',{format:'png'});
+    await fs.writeFile(path.join(root,'preview-suggestions-mobile.png'),Buffer.from(popupScreenshot.data,'base64'));
+    await press('Escape','Escape',27);
+    await evaluate("document.querySelector('#tag-assistant').open=true");
     for (const width of [390, 430]) {
         await cdp('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: true });
         await layoutCheck();
@@ -1018,8 +1099,49 @@ try {
     await click('#tagger-clear'); assert.equal(await evaluate("document.querySelector('#tagger-preview').hasAttribute('src')"), false);
     await click('#nav-gallery'); assert.equal(await evaluate("document.querySelector('#tagger-page').classList.contains('hidden')"), true);
     assert.equal((await fetch(`http://127.0.0.1:${MOCK_PORT}/__novelai-requests`).then(response=>response.json())).length, beforeTagRequests);
+    // One-click assistant grant: only explicit confirmation shares the current profile, never editor text.
+    await click('#nav-studio');
+    await waitUntil(() => evaluate("document.querySelector('#assistant-status').textContent.includes('Доступ выключен')"), 'assistant initially disabled');
+    await click('#mode-standard');
+    await change('#provider', 'gemini'); await change('#endpoint', `http://127.0.0.1:${MOCK_PORT}`);
+    await change('#model', 'mock-gemini-image'); await change('#api-key', 'BROWSER_ASSISTANT_SECRET');
+    await change('#profile-name', 'Nano Banana for helper');
+    const beforeGrant = await evaluate("({prompt:document.querySelector('#prompt').value,prefix:document.querySelector('#prefix').value,refs:document.querySelectorAll('.reference-card').length})");
+    await evaluate('window.__savedConfirm = window.confirm; window.confirm = () => false');
+    await click('#assistant-enable');
+    assert.equal(await evaluate("document.querySelector('#assistant-disable').classList.contains('hidden')"), true);
+    await assert.rejects(fs.access(path.join(imagesDir,'assistant-private','connection.json')), error => error.code === 'ENOENT');
+    await evaluate('window.confirm = () => true'); await click('#assistant-enable');
+    await waitUntil(() => evaluate("document.querySelector('#assistant-status').textContent.includes('Разрешён: Nano Banana for helper')"), 'assistant profile grant');
+    assert.deepEqual(await evaluate("({prompt:document.querySelector('#prompt').value,prefix:document.querySelector('#prefix').value,refs:document.querySelectorAll('.reference-card').length})"), beforeGrant);
+    const helperConnection = JSON.parse(await fs.readFile(path.join(imagesDir,'assistant-private','connection.json'),'utf8'));
+    assert.equal(JSON.stringify(helperConnection).includes('BROWSER_ASSISTANT_SECRET'), false);
+    assert.equal(await evaluate("document.querySelector('#assistant-status').textContent.includes('BROWSER_ASSISTANT_SECRET')"), false);
+    await change('#model', 'another-helper-model');
+    assert.ok(await evaluate("document.querySelector('#assistant-status').textContent.includes('mock-gemini-image')"), 'Changing form silently changed granted model');
+    await click('#assistant-enable');
+    await waitUntil(() => evaluate("document.querySelector('#assistant-status').textContent.includes('another-helper-model')"), 'update assistant snapshot');
+    const oldHelperToken = await fetch(`${origin}/api/assistant/info`, {method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${helperConnection.token}`},body:'{}'});
+    assert.equal(oldHelperToken.status, 401);
+    await evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.__helperInstruction=text}}})");
+    await click('#assistant-copy');
+    await waitUntil(() => evaluate("Boolean(window.__helperInstruction)"), 'copy helper instructions');
+    const helperInstruction = await evaluate('window.__helperInstruction');
+    assert.ok(helperInstruction.includes('studio-assistant.mjs') && helperInstruction.includes('generate --prompt'));
+    assert.equal(helperInstruction.includes('BROWSER_ASSISTANT_SECRET') || helperInstruction.includes(helperConnection.token), false);
+    await reload();
+    await waitUntil(() => evaluate("document.querySelector('#assistant-status').textContent.includes('another-helper-model')"), 'grant survives browser reload only');
+    for (const width of [360,390,430]) {
+        await cdp('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:true}); await layoutCheck();
+    }
+    const helperClip = await evaluate("(() => {const b=document.querySelector('.assistant-access').getBoundingClientRect(); return {x:b.left+scrollX,y:b.top+scrollY,width:b.width,height:b.height,scale:1}})()");
+    const helperScreenshot = await cdp('Page.captureScreenshot',{captureBeyondViewport:true,format:'png',clip:helperClip});
+    await fs.writeFile(path.join(root,'preview-assistant-access-mobile.png'),Buffer.from(helperScreenshot.data,'base64'));
+    await click('#assistant-disable');
+    await waitUntil(() => evaluate("document.querySelector('#assistant-status').textContent.includes('Доступ выключен')"), 'assistant revoked in UI');
+    await assert.rejects(fs.access(path.join(imagesDir,'assistant-private','connection.json')), error => error.code === 'ENOENT');
     assert.deepEqual(errors, [], 'Browser JS errors');
-    console.log('Browser checks passed: WD/PixAI tab/upload/paste/canvas/consent/tag capsules/edits/formats/append-only transfer/empty results/errors/cancel/mobile, Kaloscope tab/upload/paste/canvas/consent/privacy/artist links/style transfer/errors/cancel/mobile, large 140k+ Danbooru worker catalog/aliases/categories/pagination/stale-query protection, local NovelAI tag suggestions/imports/Russian search/weights/reordering/undo/isolation, no generation calls for tag help, gallery search/provider/date/sort/page shortcuts, filtered full-screen browsing, real keyboard and phone swipes, rapid navigation, current-image download, small thumbnails, explicit prompt reuse, inline colored capsules, real keyboard/caret/Unicode/IME, copy/cut/plain paste, atomic deletion, undo/redo, reload, styles/previews/mode isolation, chunk autocomplete/expansion/renaming, no API calls for invalid chunks, database migration, history, profiles, mobile layout');
+    console.log('Browser checks passed: assistant opt-in/confirmation/snapshot/update/token rotation/instructions/reload/revoke/mobile, WD/PixAI tab/upload/paste/canvas/consent/tag capsules/edits/formats/append-only transfer/empty results/errors/cancel/mobile, Kaloscope tab/upload/paste/canvas/consent/privacy/artist links/style transfer/errors/cancel/mobile, large 140k+ Danbooru worker catalog/aliases/categories/pagination/stale-query protection, local NovelAI tag suggestions/imports/Russian search/weights/reordering/undo/isolation, no generation calls for tag help, gallery search/provider/date/sort/page shortcuts, filtered full-screen browsing, real keyboard and phone swipes, rapid navigation, current-image download, small thumbnails, explicit prompt reuse, inline colored capsules, real keyboard/caret/Unicode/IME, copy/cut/plain paste, atomic deletion, undo/redo, reload, styles/previews/mode isolation, chunk autocomplete/expansion/renaming, no API calls for invalid chunks, database migration, history, profiles, mobile layout');
 } finally {
     socket?.close();
     for (const request of pending.values()) clearTimeout(request.timeout);

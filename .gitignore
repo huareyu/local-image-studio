@@ -4,6 +4,9 @@
 # Private generated images (never publish them to GitHub)
 /generated-images/
 
+# Private local assistant capability (never contains provider keys, never publish)
+/.assistant-access/
+
 # Local browser/test artifacts
 .chrome-*/
 .edge-*/

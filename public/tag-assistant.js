@@ -2,6 +2,7 @@ import { BUILTIN_TAGS } from './novelai-tags.js';
 import { createTagIndex, searchTags, tagKey, promptTags,
     findTagQuery, removePromptTag, movePromptTag, changeTagWeight, MAX_DICTIONARY_BYTES } from './tag-tools.js';
 import { createTagSearchClient } from './tag-search-client.js';
+import { createSuggestionPopup } from './suggestion-popup.js';
 
 const STATE_KEY = 'image-studio.tag-assistant.v1';
 const PAGE_SIZE = 12;
@@ -33,6 +34,7 @@ export function createTagAssistant({ fields, getMode, loadDictionary, saveDictio
     function clearSuggestions(binding) {
         binding.serial = (binding.serial || 0) + 1;
         binding.list.replaceChildren(); binding.matches = []; binding.query = null;
+        binding.list.setAttribute('aria-busy', 'false');
     }
     function applyCatalog(result) {
         metadata = result;
@@ -108,7 +110,7 @@ export function createTagAssistant({ fields, getMode, loadDictionary, saveDictio
     }
     function choose(binding, item) {
         const { field, query, source } = binding;
-        if (!query || field.value !== source || !enabled() || !ui.enabled.checked) return;
+        if (!item || !query || field.value !== source || !enabled() || !ui.enabled.checked) return;
         field.focus({ preventScroll: true });
         const suffix = field.value.slice(query.end).trim() ? '' : ', ';
         edit(field, item.tag + suffix, query.start, query.end);
@@ -117,29 +119,33 @@ export function createTagAssistant({ fields, getMode, loadDictionary, saveDictio
     async function suggestions(binding) {
         const { field, list } = binding;
         binding.caret = field.selectionStart;
-        clearSuggestions(binding);
-        if (!enabled() || !ui.enabled.checked || binding.composing || field.disabled || field.readOnly) return;
+        if (!enabled() || !ui.enabled.checked || binding.composing || field.disabled || field.readOnly) return clearSuggestions(binding);
         const query = findTagQuery(field.value, field.selectionStart);
-        if (!query) return;
-        const serial = binding.serial, source = field.value, caret = field.selectionStart;
+        if (!query) return clearSuggestions(binding);
+        const serial = binding.serial = (binding.serial || 0) + 1, source = field.value, caret = field.selectionStart;
+        // Keep the old popup while the worker searches; invalidate its actions, then replace once.
+        // Emptying/rebuilding a list on every input used to make both it and the page flash.
+        binding.query = null; binding.matches = []; list.setAttribute('aria-busy', 'true');
         const result = await queryCatalog(query.query, { used: used(field), limit: 6 });
         if (serial !== binding.serial || !enabled() || !ui.enabled.checked || field.disabled || field.value !== source || field.selectionStart !== caret) return;
         binding.query = query; binding.source = field.value; binding.highlight = 0;
         binding.matches = result.items;
+        const fragment = document.createDocumentFragment();
         for (const [i, item] of binding.matches.entries()) {
             const button = node('button', 'tag-suggestion');
-            button.type = 'button'; button.setAttribute('role', 'option'); button.setAttribute('aria-selected', String(i === 0));
+            button.type = 'button'; button.tabIndex = -1; button.setAttribute('role', 'option'); button.setAttribute('aria-selected', String(i === 0));
             button.append(node('strong', '', item.tag), node('small', '', item.desc || `${item.category}${item.count ? ` · ${item.count.toLocaleString('ru-RU')} работ` : ''}`));
             button.addEventListener('pointerdown', event => event.preventDefault());
-            button.addEventListener('click', () => choose(binding, item)); list.append(button);
+            button.addEventListener('click', () => choose(binding, item)); fragment.append(button);
         }
+        list.replaceChildren(fragment); list.setAttribute('aria-busy', 'false'); binding.popup.reset();
     }
     function attach(field) {
         const list = node('div', 'tag-suggestions');
         list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', 'Подсказки тегов NovelAI');
         list.dataset.field = field.id;
         field.closest('label').after(list);
-        const binding = { field, list, matches: [], query: null, source: '', highlight: 0 };
+        const binding = { field, list, popup: createSuggestionPopup(field, list), matches: [], query: null, source: '', highlight: 0 };
         bindings.push(binding);
         field.addEventListener('input', event => {
             binding.composing = Boolean(event.isComposing);
@@ -153,11 +159,13 @@ export function createTagAssistant({ fields, getMode, loadDictionary, saveDictio
             if (active !== field && active?.dataset.field !== field.id) clearSuggestions(binding);
         }, 160));
         field.addEventListener('keydown', event => {
-            if (event.defaultPrevented || event.isComposing || !list.children.length || !enabled() || event.ctrlKey || event.metaKey || event.altKey) return;
-            if (event.key === 'Escape') { event.preventDefault(); clearSuggestions(binding); }
-            else if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
+            if (event.defaultPrevented || event.isComposing || !enabled() || event.ctrlKey || event.metaKey || event.altKey) return;
+            if (event.key === 'Escape') { event.preventDefault(); clearSuggestions(binding); return; }
+            if (!binding.matches.length) return;
+            if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
                 event.preventDefault(); binding.highlight = (binding.highlight + (event.key === 'ArrowDown' ? 1 : -1) + binding.matches.length) % binding.matches.length;
                 [...list.children].forEach((button, i) => button.setAttribute('aria-selected', String(i === binding.highlight)));
+                binding.popup.reveal(binding.highlight);
             } else if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault(); event.stopPropagation(); choose(binding, binding.matches[binding.highlight]);
             }

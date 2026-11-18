@@ -1,5 +1,6 @@
 import { chunkToken, expandPromptChunks, findChunkQuery, renameChunkReferences, compilePromptText } from './prompt-tools.js';
 import { createChunkEditor, chunkHue } from './chunk-editor.js';
+import { createSuggestionPopup } from './suggestion-popup.js';
 
 const STATE_KEY = 'image-studio.prompt-library-state.v1';
 const PAGE_SIZE = 6;
@@ -236,16 +237,18 @@ export function createPromptLibrary({ dbGetAll, dbSave, dbDelete, getMode, prefi
         binding.matches = chunks().filter(item => item.name.toLocaleLowerCase().includes(query.query.toLocaleLowerCase())).slice(0, 6);
         for (const [index, item] of binding.matches.entries()) {
             const option = text('button', 'chunk-suggestion', `@${item.name} — ${item.category || item.text.slice(0, 80)}`);
-            option.type = 'button'; option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(index === 0));
+            option.type = 'button'; option.tabIndex = -1; option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(index === 0));
             option.addEventListener('pointerdown', event => event.preventDefault());
             option.addEventListener('click', () => insertChunk(field, item.name, query));
             suggestions.append(option);
         }
+        binding.popup.reset();
     }
     function refreshBindings() { for (const binding of bindings) refreshBinding(binding); }
     function attachField(field) {
         const tools = text('div', 'chunk-field-tools hidden');
         const suggestions = text('div', 'chunk-suggestions'); suggestions.setAttribute('role', 'listbox'); suggestions.setAttribute('aria-label', 'Сохранённые чанки');
+        suggestions.dataset.field = field.id;
         const inspection = text('div', 'chunk-inspection hidden');
         tools.append(suggestions, inspection);
         field.closest('label').after(tools);
@@ -264,7 +267,7 @@ export function createPromptLibrary({ dbGetAll, dbSave, dbDelete, getMode, prefi
                 } catch (error) { showMessage(error.message); }
             },
         });
-        const binding = { field, tools, suggestions, inspection, editor, matches: [], highlight: 0 };
+        const binding = { field, tools, suggestions, inspection, editor, popup: createSuggestionPopup(field, suggestions), matches: [], highlight: 0 };
         bindings.push(binding);
         field.addEventListener('focus', () => { if (![ui.text, ui.negative].includes(field)) lastField = field; refreshBinding(binding, { suggest: true }); });
         field.addEventListener('input', event => {
@@ -279,6 +282,7 @@ export function createPromptLibrary({ dbGetAll, dbSave, dbDelete, getMode, prefi
             if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
                 event.preventDefault(); binding.highlight = (binding.highlight + (event.key === 'ArrowDown' ? 1 : -1) + binding.matches.length) % binding.matches.length;
                 [...suggestions.children].forEach((node, index) => node.setAttribute('aria-selected', String(index === binding.highlight)));
+                binding.popup.reveal(binding.highlight);
             } else if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
                 event.preventDefault(); event.stopPropagation(); insertChunk(field, binding.matches[binding.highlight].name, binding.query);
             }

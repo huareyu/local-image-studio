@@ -120,6 +120,15 @@
                     <span>Сохранять API-ключ и пароль прокси в этом браузере</span>
                 </label>
                 <p class="hint">В профиль сохраняются тип API, endpoint, прокси, ключ, модель и параметры изображения. Галерея референсов и история общие для всех профилей.</p>
+                <div class="assistant-access">
+                    <h3>Картинки для помощника</h3>
+                    <p class="hint">Генерация для помощника на этом компьютере, через твой профиль. Ключ не нужно отправлять в чат.</p>
+                    <button id="assistant-enable" class="secondary-button" type="button">Разрешить помощнику использовать этот профиль</button>
+                    <p id="assistant-status" class="hint" role="status" aria-live="polite">Проверяю доступ…</p>
+                    <div class="artist-run-actions"><button id="assistant-disable" class="text-button danger-text hidden" type="button">Отключить доступ</button><button id="assistant-copy" class="text-button hidden" type="button">Скопировать инструкцию помощнику</button></div>
+                    <p id="assistant-instructions" class="hint hidden">Теперь можно написать: «Сделай картинку через студию». Это работает с помощником, у которого есть доступ к этому компьютеру, не с любым облачным чатом.</p>
+                    <details class="assistant-help"><summary>Что разрешается</summary><p class="hint">Запросы расходуют баланс твоего провайдера. Разрешается снимок настроек на момент нажатия. После изменения модели или профиля обнови доступ кнопкой. Сцена, стиль и референсы из редактора не передаются автоматически.</p><p class="hint">Доступ действует до отключения или перезапуска сервера; ключ провайдера хранится только в памяти. Один запрос за раз, не более 20 в час. Отключение прерывает ожидание, но не гарантирует отмену уже оплаченной генерации у провайдера.</p></details>
+                </div>
             </section>
 
             <section id="novelai-panel" class="panel novelai-panel hidden">
@@ -152,7 +161,7 @@
                         <button id="novelai-negative-rename" class="icon-button" type="button" title="Переименовать шаблон" aria-label="Переименовать шаблон">✎</button>
                         <button id="novelai-negative-delete" class="icon-button danger" type="button" title="Удалить шаблон" aria-label="Удалить шаблон">×</button>
                     </div>
-                    <p class="hint">Выбери шаблон, чтобы загрузить его текст. Кнопка ✓ сохраняет изменения; ＋ создаёт свой шаблон.</p>
+                    <p class="hint">Текст негатива сохраняется в текущем профиле автоматически, даже без генерации. Выбор шаблона загружает его текст; ✓ обновляет сам шаблон, ＋ создаёт новый. Сохранённые шаблоны не меняются при обычном вводе.</p>
                 </div>
 
                 <div class="novelai-settings-box">

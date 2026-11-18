@@ -9,6 +9,7 @@ import { decodeNovelaiResult } from './lib/novelai-result.mjs';
 import { createImageArchive } from './lib/image-archive.mjs';
 import { classifyArtistImage } from './lib/artist-classifier.mjs';
 import { tagImage } from './lib/image-tagger.mjs';
+import { createAssistantAccess } from './lib/assistant-access.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -17,6 +18,11 @@ const PORT = Number(process.env.PORT || 3210);
 const MAX_BODY_BYTES = 90 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 const proxyAgents = new Map();
+const ASSISTANT_SIGNAL = Symbol('assistant-signal');
+const assistantAccess = createAssistantAccess({
+    directory: process.env.IMAGE_STUDIO_ASSISTANT_DIR || path.join(ROOT, '.assistant-access'),
+    origin: `http://127.0.0.1:${PORT}`, cliPath: path.join(ROOT, 'scripts', 'studio-assistant.mjs'),
+});
 
 const MIME_TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -183,16 +189,18 @@ async function fetchWithTimeout(url, options = {}, incomingRequest = null, profi
     const timeout = setTimeout(() => controller.abort(new Error('Request timed out')), REQUEST_TIMEOUT_MS);
     const abortFromClient = () => controller.abort(new Error('Client disconnected'));
     incomingRequest?.once('aborted', abortFromClient);
+    const signal = incomingRequest?.[ASSISTANT_SIGNAL]
+        ? AbortSignal.any([controller.signal, incomingRequest[ASSISTANT_SIGNAL]]) : controller.signal;
     try {
         return await fetch(url, {
             ...options,
-            signal: controller.signal,
+            signal,
             dispatcher: proxyDispatcher(profile),
         });
     } catch (error) {
         if (error instanceof HttpError) throw error;
-        if (controller.signal.aborted) {
-            const reason = controller.signal.reason?.message || 'Запрос отменён';
+        if (signal.aborted) {
+            const reason = signal.reason?.message || 'Запрос отменён';
             throw new HttpError(499, reason, `URL: ${safeUrlForLog(url)}`);
         }
         throw new HttpError(502, 'Не удалось подключиться к API', describeConnectionError(error, url));
@@ -438,9 +446,7 @@ async function handleNovelaiStatus(req, res) {
     });
 }
 
-async function handleGenerate(req, res) {
-    requireLocalImageAction(req);
-    const body = await readJson(req);
+async function generateImage(body, req) {
     const provider = String(body?.profile?.provider || 'openai');
     let result;
     if (provider === 'gemini') result = await generateGemini(body, req);
@@ -455,7 +461,62 @@ async function handleGenerate(req, res) {
         // A disk problem must not discard an already-paid generation.
         result.archiveError = `Не удалось сохранить файл: ${error.message}`;
     }
+    return result;
+}
+
+async function handleGenerate(req, res) {
+    requireLocalImageAction(req);
+    const result = await generateImage(await readJson(req), req);
     sendJson(res, 200, result);
+}
+
+async function handleAssistant(req, res) {
+    const action = req.url.slice('/api/assistant/'.length);
+    let helperRequest = false;
+    let controller, timeout, closed;
+    try {
+        requireLocalImageAction(req);
+        if (['status', 'enable', 'disable'].includes(action)) {
+            const expectedOrigin = new URL(`http://${req.headers.host}`).origin;
+            if (req.headers.origin !== expectedOrigin || req.headers['x-image-studio-ui'] !== '1') throw new HttpError(403, 'Разрешать и отключать доступ можно только из интерфейса студии');
+            const body = await readJson(req, 256 * 1024);
+            const result = action === 'enable' ? await assistantAccess.enable(body)
+                : action === 'disable' ? await assistantAccess.revoke() : assistantAccess.status();
+            return sendJson(res, 200, result);
+        }
+        helperRequest = true;
+        if (req.headers.origin) throw new HttpError(403, 'Этот API предназначен для локальной команды помощника, не для веб-страниц');
+        assistantAccess.authenticate(req.headers.authorization);
+        if (action === 'info') {
+            await readJson(req, 1024);
+            return sendJson(res, 200, assistantAccess.status());
+        }
+        if (action !== 'generate') throw new HttpError(404, 'Неизвестная команда помощника');
+        const body = await readJson(req, 48 * 1024 * 1024);
+        controller = new AbortController();
+        timeout = setTimeout(() => controller.abort(new Error('Assistant generation timed out')), REQUEST_TIMEOUT_MS);
+        closed = () => { if (!res.writableEnded) controller.abort(new Error('Assistant client disconnected')); };
+        res.once('close', closed);
+        const result = await assistantAccess.generate(req.headers.authorization, body, async (request, signal) => {
+            req[ASSISTANT_SIGNAL] = signal;
+            return generateImage(request, req);
+        }, controller.signal);
+        // Deliberately whitelist the result; never return the approved profile, upstream errors or credentials.
+        if (!res.destroyed) sendJson(res, 200, { id: result.id, createdAt: result.createdAt, provider: result.provider, model: result.model,
+            dataUrl: result.dataUrl, archive: result.archive, archiveError: result.archiveError ? 'Не удалось сохранить в папку студии; сохрани результат командой --output' : undefined,
+            seed: result.seed, width: result.width, height: result.height });
+    } catch (error) {
+        if (res.destroyed) return;
+        const status = Number(error.status) || 500;
+        // Provider errors can echo keys/headers. Do not return or log their text on this capability API.
+        const safe = helperRequest && ![400, 401, 403, 409, 413, 429].includes(status)
+            ? `Генерация через студию не завершилась (HTTP ${status}). Проверь подключение в интерфейсе студии; запрос не будет повторён автоматически.`
+            : error.message || 'Не удалось изменить доступ помощнику';
+        sendJson(res, status, { error: safe });
+    } finally {
+        clearTimeout(timeout);
+        if (closed) res.off('close', closed);
+    }
 }
 
 function requireLocalImageAction(req) {
@@ -581,6 +642,7 @@ async function serveStatic(req, res) {
 
 const server = http.createServer(async (req, res) => {
     try {
+        if (req.method === 'POST' && req.url?.startsWith('/api/assistant/')) return await handleAssistant(req, res);
         if (req.method === 'POST' && req.url === '/api/generate') return await handleGenerate(req, res);
         if (req.method === 'POST' && req.url === '/api/models') return await handleModels(req, res);
         if (req.method === 'POST' && req.url === '/api/novelai/status') return await handleNovelaiStatus(req, res);

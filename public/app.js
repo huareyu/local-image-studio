@@ -11,6 +11,7 @@ import { createTagAssistant } from './tag-assistant.js';
 import { createArtistClassifier } from './artist-classifier.js';
 import { createImageTagger } from './image-tagger.js';
 import { appendImageTags } from './image-tagger-tools.js';
+import { createAssistantPanel } from './assistant-access.js';
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -265,6 +266,7 @@ const imageTagger = createImageTagger({
         showMessage(extra ? 'Выбранные теги добавлены без замены текущего текста' : 'Эти теги уже есть в выбранном поле', 'success');
     },
 });
+const assistantPanel = createAssistantPanel({ getProfile: () => readProfileFromForm(), showMessage });
 
 function readJson(storage, key, fallback) {
     try {
@@ -521,6 +523,24 @@ function renderNovelaiNegativePresets() {
 function persistNovelaiNegativePresets() {
     localStorage.setItem(STORAGE_KEYS.novelaiNegativePresets, JSON.stringify(novelaiNegativePresets));
     renderNovelaiNegativePresets();
+    saveNovelaiNegativeDraft();
+}
+
+function saveNovelaiNegativeDraft() {
+    const field = NOVELAI_FIELDS.novelaiNegativePrompt;
+    const profile = currentProfile();
+    if (els.provider.value !== 'novelai' || profile.provider !== 'novelai' || field.disabled) return;
+    novelaiValues.novelaiNegativePrompt = field.value;
+    const presetId = novelaiValues.novelaiNegativePresetId || '';
+    if (profile.novelaiNegativePrompt === field.value && profile.novelaiNegativePresetId === presetId) return;
+    const previous = { novelaiNegativePrompt: profile.novelaiNegativePrompt, novelaiNegativePresetId: profile.novelaiNegativePresetId };
+    profile.novelaiNegativePrompt = field.value;
+    profile.novelaiNegativePresetId = presetId;
+    try { persistProfiles(); }
+    catch {
+        Object.assign(profile, previous);
+        showMessage('Не удалось сохранить негатив в браузере. Проверь доступное место и разрешение на хранение данных.');
+    }
 }
 
 function renderNovelaiTagPresets() {
@@ -811,6 +831,9 @@ async function loadReferences() {
 }
 
 function saveDraftSoon() {
+    // Persist NovelAI's per-profile negative immediately, including edits from the rich editor,
+    // tag suggestions, styles and history. A reload must not require blur or the profile save button.
+    saveNovelaiNegativeDraft();
     clearTimeout(saveDraftTimer);
     saveDraftTimer = setTimeout(() => {
         localStorage.setItem(STORAGE_KEYS.draft, JSON.stringify({
@@ -1304,6 +1327,7 @@ function bindEvents() {
             NOVELAI_FIELDS.novelaiNegativePrompt.value = preset.value;
         }
         renderNovelaiNegativePresets();
+        saveNovelaiNegativeDraft();
     });
     els.novelaiNegativeNew.addEventListener('click', () => {
         const name = window.prompt('Название шаблона негатива')?.trim();
@@ -1403,7 +1427,7 @@ function bindEvents() {
         if (files.length) addReferenceFiles(files);
     });
 
-    for (const field of [els.prefix, els.prompt, els.negativePrompt]) field.addEventListener('input', saveDraftSoon);
+    for (const field of [els.prefix, els.prompt, els.negativePrompt, NOVELAI_FIELDS.novelaiNegativePrompt]) field.addEventListener('input', saveDraftSoon);
     els.generate.addEventListener('click', generate);
     els.cancel.addEventListener('click', () => generationController?.abort());
     document.addEventListener('keydown', event => {
@@ -1469,7 +1493,7 @@ async function init() {
     loadDraft();
     bindEvents();
     try {
-        await Promise.all([loadReferences(), renderHistory(), promptLibrary.init(), tagAssistant.init()]);
+        await Promise.all([loadReferences(), renderHistory(), promptLibrary.init(), tagAssistant.init(), assistantPanel.init()]);
     } catch (error) {
         showMessage(`Не удалось открыть локальную базу: ${error.message}`);
     }

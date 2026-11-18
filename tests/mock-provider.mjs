@@ -8,6 +8,7 @@ const artistRequests = [];
 const artistJobs = new Map();
 const taggerRequests = [];
 const taggerJobs = new Map();
+const imageRequests = [];
 
 async function readBody(req) {
     const chunks = [];
@@ -23,6 +24,7 @@ function json(res, value) {
 http.createServer(async (req, res) => {
     const body = await readBody(req);
     if (req.url === '/__novelai-requests') return json(res, novelaiRequests);
+    if (req.url === '/__image-requests') return json(res, imageRequests);
     if (req.url === '/__artist-requests') return json(res, artistRequests);
     if (req.url === '/__tagger-requests') return json(res, taggerRequests);
     if (/^\/(wd|pixai)\/gradio_api\/upload$/.test(req.url)) {
@@ -99,17 +101,28 @@ http.createServer(async (req, res) => {
     }
     if (req.url?.includes(':generateContent')) {
         const payload = JSON.parse(body.toString('utf8'));
+        imageRequests.push({ url: req.url, payload, authorization: req.headers.authorization || '', googleKey: req.headers['x-goog-api-key'] || '' });
         if (!payload.contents?.[0]?.parts?.some(part => part.text)) throw new Error('Gemini prompt missing');
+        if (JSON.stringify(payload).includes('ASSISTANT_ERROR')) {
+            res.writeHead(502, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: { message: 'UPSTREAM_SECRET_SHOULD_NEVER_LEAK' } }));
+        }
+        if (JSON.stringify(payload).includes('ASSISTANT_SLOW')) {
+            setTimeout(() => { if (!res.destroyed) json(res, { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: PIXEL } }] } }] }); }, 1500);
+            return;
+        }
         return json(res, {
             candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: PIXEL } }] } }],
         });
     }
     if (req.url === '/v1/images/generations') {
         const payload = JSON.parse(body.toString('utf8'));
+        imageRequests.push({ url: req.url, payload, authorization: req.headers.authorization || '' });
         if (!payload.prompt || !payload.model) throw new Error('OpenAI payload incomplete');
         return json(res, { data: [{ b64_json: PIXEL }] });
     }
     if (req.url === '/v1/images/edits') {
+        imageRequests.push({ url: req.url, authorization: req.headers.authorization || '', multipart: body.toString('latin1') });
         if (!String(req.headers['content-type']).includes('multipart/form-data')) throw new Error('Expected multipart');
         if (!body.includes(Buffer.from('reference-0'))) throw new Error('Reference file missing');
         return json(res, { data: [{ b64_json: PIXEL }] });
